@@ -29,11 +29,10 @@ function AuthPage() {
   const navigate = useNavigate();
   const [busy, setBusy] = useState(false);
 
+  // Handled by router route guards and manual submittals
   useEffect(() => {
-    supabase.auth.getUser().then(({ data }) => {
-      if (data.user) navigate({ to: "/dashboard", replace: true });
-    });
-  }, [navigate]);
+    // No automatic redirection on load to prevent router transition loops
+  }, []);
 
   return (
     <div className="min-h-screen grid place-items-center px-4 py-10 bg-gradient-to-b from-background via-background to-secondary/40">
