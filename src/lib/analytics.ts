@@ -80,30 +80,60 @@ export function buildPerformanceRows(
   const financialYear = currentFinancialYear(date);
   const currentMonth = date.getMonth() + 1;
 
+  const salesByEmployee = new Map<string, MonthlySalesRow[]>();
+  for (const row of sales) {
+    if (row.financial_year !== financialYear) continue;
+    let arr = salesByEmployee.get(row.employee_code);
+    if (!arr) {
+      arr = [];
+      salesByEmployee.set(row.employee_code, arr);
+    }
+    arr.push(row);
+  }
+
+  const targetsByEmployee = new Map<string, MonthlyTargetRow[]>();
+  for (const row of targets) {
+    if (row.financial_year !== financialYear) continue;
+    let arr = targetsByEmployee.get(row.employee_code);
+    if (!arr) {
+      arr = [];
+      targetsByEmployee.set(row.employee_code, arr);
+    }
+    arr.push(row);
+  }
+
   return employees.map((employee) => {
-    const employeeSales = sales.filter(
-      (row) => row.employee_code === employee.employee_code && row.financial_year === financialYear,
-    );
-    const employeeTargets = targets.filter(
-      (row) => row.employee_code === employee.employee_code && row.financial_year === financialYear,
-    );
+    const employeeSales = salesByEmployee.get(employee.employee_code) || [];
+    const employeeTargets = targetsByEmployee.get(employee.employee_code) || [];
 
-    const currentSales = employeeSales
-      .filter((row) => row.month === currentMonth)
-      .reduce((sum, row) => sum + toNumber(row.sales_amount), 0);
-    const currentTarget = employeeTargets
-      .filter((row) => row.month === currentMonth)
-      .reduce((sum, row) => sum + toNumber(row.target_amount), 0);
-    const currentPreviousYearSales = employeeSales
-      .filter((row) => row.month === currentMonth)
-      .reduce((sum, row) => sum + toNumber(row.previous_year_sales), 0);
+    let currentSales = 0;
+    let currentPreviousYearSales = 0;
+    let ytdSales = 0;
 
-    const ytdSales = employeeSales
-      .filter((row) => isInYtd(row.month, date))
-      .reduce((sum, row) => sum + toNumber(row.sales_amount), 0);
-    const ytdTarget = employeeTargets
-      .filter((row) => isInYtd(row.month, date))
-      .reduce((sum, row) => sum + toNumber(row.target_amount), 0);
+    for (const row of employeeSales) {
+      const amount = toNumber(row.sales_amount);
+      const prevAmount = toNumber(row.previous_year_sales);
+      if (row.month === currentMonth) {
+        currentSales += amount;
+        currentPreviousYearSales += prevAmount;
+      }
+      if (isInYtd(row.month, date)) {
+        ytdSales += amount;
+      }
+    }
+
+    let currentTarget = 0;
+    let ytdTarget = 0;
+
+    for (const row of employeeTargets) {
+      const amount = toNumber(row.target_amount);
+      if (row.month === currentMonth) {
+        currentTarget += amount;
+      }
+      if (isInYtd(row.month, date)) {
+        ytdTarget += amount;
+      }
+    }
 
     const achievementPct = currentTarget > 0 ? (currentSales / currentTarget) * 100 : 0;
     const growthPct =
@@ -136,31 +166,29 @@ export function buildScopeTrend(
 ) {
   const financialYear = currentFinancialYear(date);
   const months = fiscalMonthsToCurrent(date);
+
+  const employeeCodes = new Set(rows.map(r => r.employee_code));
+
+  const validSalesByMonth = new Map<number, number>();
+  for (const s of sales) {
+    if (s.financial_year === financialYear && employeeCodes.has(s.employee_code)) {
+      validSalesByMonth.set(s.month, (validSalesByMonth.get(s.month) || 0) + toNumber(s.sales_amount));
+    }
+  }
+
+  const validTargetsByMonth = new Map<number, number>();
+  for (const t of targets) {
+    if (t.financial_year === financialYear && employeeCodes.has(t.employee_code)) {
+      validTargetsByMonth.set(t.month, (validTargetsByMonth.get(t.month) || 0) + toNumber(t.target_amount));
+    }
+  }
+
   return months
     .filter((month) => month >= 1 && month <= 12)
     .map((month) => {
-      const salesTotal = rows.reduce((sum, row) => {
-        const amount = sales
-          .filter(
-            (item) =>
-              item.employee_code === row.employee_code &&
-              item.financial_year === financialYear &&
-              item.month === month,
-          )
-          .reduce((subtotal, item) => subtotal + toNumber(item.sales_amount), 0);
-        return sum + amount;
-      }, 0);
-      const targetTotal = rows.reduce((sum, row) => {
-        const amount = targets
-          .filter(
-            (item) =>
-              item.employee_code === row.employee_code &&
-              item.financial_year === financialYear &&
-              item.month === month,
-          )
-          .reduce((subtotal, item) => subtotal + toNumber(item.target_amount), 0);
-        return sum + amount;
-      }, 0);
+      const salesTotal = validSalesByMonth.get(month) || 0;
+      const targetTotal = validTargetsByMonth.get(month) || 0;
+
       return {
         month,
         label: monthLabel(month),
