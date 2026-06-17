@@ -150,14 +150,11 @@ function RootComponent() {
 
   useEffect(() => {
     if ("serviceWorker" in navigator) {
-      navigator.serviceWorker
-        .register(import.meta.env.BASE_URL + "sw.js")
-        .then((reg) => {
-          console.log("Service Worker registered successfully:", reg.scope);
-        })
-        .catch((err) => {
-          console.error("Service Worker registration failed:", err);
-        });
+      navigator.serviceWorker.getRegistrations().then((registrations) => {
+        for (let registration of registrations) {
+          registration.unregister();
+        }
+      });
     }
   }, []);
 
