@@ -7,7 +7,7 @@ export const getRouter = () => {
 
   const router = createRouter({
     routeTree,
-    basepath: "/",
+    basepath: "/adonis_lab_sales_dashboard/",
     context: { queryClient },
     scrollRestoration: true,
     defaultPreloadStaleTime: 0,

@@ -6,7 +6,7 @@ import tailwindcss from "@tailwindcss/vite";
 import { resolve } from "path";
 
 export default defineConfig({
-  base: "/",
+  base: "/adonis_lab_sales_dashboard/",
   build: {
     outDir: "dist",
     emptyOutDir: true,

@@ -117,7 +117,7 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
       },
       {
         rel: "manifest",
-        href: "./manifest.json",
+        href: import.meta.env.BASE_URL + "manifest.json",
       },
       {
         rel: "apple-touch-icon",
