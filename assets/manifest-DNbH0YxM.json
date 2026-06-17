@@ -1,0 +1,25 @@
+{
+  "name": "Adonis Sales Performance Portal",
+  "short_name": "Adonis Sales",
+  "description": "Secure Sales Performance Dashboard for Adonis Pharmaceutical Field Force",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0B1528",
+  "theme_color": "#0F1E36",
+  "orientation": "portrait-primary",
+  "categories": ["business", "productivity"],
+  "icons": [
+    {
+      "src": "https://img.icons8.com/color/192/000000/medical-doctor.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "https://img.icons8.com/color/512/000000/medical-doctor.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}
