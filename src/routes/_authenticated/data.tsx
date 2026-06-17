@@ -489,9 +489,10 @@ function CsvUploadSection() {
           })
           .filter((row): row is { employee_code: string; manager_code: string } => !!row);
 
+        const baseCodes = new Set(baseRows.map((item) => item.employee_code));
         const invalidManagers = managerRows.filter(
           (row) =>
-            !baseRows.some((item) => item.employee_code === row.manager_code) &&
+            !baseCodes.has(row.manager_code) &&
             !knownCodes.has(row.manager_code),
         );
         if (invalidManagers.length) {
