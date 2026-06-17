@@ -229,17 +229,13 @@ function answerFallback(context: AssistantContext) {
   ].join("\n");
 }
 
-export const askAssistant = createServerFn({ method: "POST" })
-  .middleware([requireSupabaseAuth])
-  .validator((data: unknown) => AskInput.parse(data))
-  .handler(async ({ data, context }) => {
-    const { supabase } = context;
+export const askAssistant = async (question: string, supabase: any, userId: string) => {
     const financialYear = currentFinancialYear();
 
     const { data: profile, error: profileError } = await supabase
       .from("user_profiles")
       .select("auth_user_id, employee_code, role")
-      .eq("auth_user_id", context.userId)
+      .eq("auth_user_id", userId)
       .maybeSingle();
     if (profileError) throw profileError;
     if (!profile) throw new Error("No employee profile linked to this account.");
@@ -273,10 +269,10 @@ export const askAssistant = createServerFn({ method: "POST" })
       ]);
 
     const rows = buildPerformanceRows(employees as PortalEmployee[], sales, targets);
-    const contextSummary = buildContext(employee, rows, data.question);
+    const contextSummary = buildContext(employee, rows, question);
     const role = normalizeRole(profile.role ?? employee.role);
     const visibleScope = isGlobalRole(role) ? "company" : isManagerialRole(role) ? "team" : "self";
-    const intent = parseIntent(data.question);
+    const intent = parseIntent(question);
 
     const answerByIntent: Record<Intent, string> = {
       self_achievement: answerSelfAchievement(contextSummary),
@@ -302,4 +298,4 @@ export const askAssistant = createServerFn({ method: "POST" })
         `Financial year: ${financialYear}`,
       ].join("\n"),
     };
-  });
+  };

@@ -15,7 +15,7 @@ ALTER TABLE public.monthly_sales
 ADD COLUMN IF NOT EXISTS previous_year_sales numeric(14,2) DEFAULT 0;
 
 -- Recreate functions and roles support
-DROP FUNCTION IF EXISTS public.has_role(uuid, public.app_role);
+DROP FUNCTION IF EXISTS public.has_role(uuid, public.app_role) CASCADE;
 CREATE OR REPLACE FUNCTION public.has_role(_user_id uuid, _role text)
 RETURNS boolean LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public AS $$
   SELECT EXISTS(

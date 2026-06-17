@@ -6,6 +6,8 @@ import { askAssistant } from "@/lib/assistant.functions";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 
+import { supabase } from "@/integrations/supabase/client";
+
 export const Route = createFileRoute("/_authenticated/assistant")({
   head: () => ({ meta: [{ title: "Assistant · Pharmaceutical Sales Portal" }] }),
   component: AssistantPage,
@@ -23,7 +25,6 @@ const SUGGESTIONS = [
 ];
 
 function AssistantPage() {
-  const ask = useServerFn(askAssistant);
   const [messages, setMessages] = useState<Msg[]>([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
@@ -40,7 +41,10 @@ function AssistantPage() {
     setInput("");
     setBusy(true);
     try {
-      const response = await ask({ data: { question } });
+      const session = await supabase.auth.getSession();
+      const userId = session.data.session?.user.id;
+      if (!userId) throw new Error("Not authenticated");
+      const response = await askAssistant(question, supabase, userId);
       setMessages((current) => [...current, { role: "assistant", content: response.answer }]);
     } catch (error) {
       const message = error instanceof Error ? error.message : "Failed to load an answer.";
