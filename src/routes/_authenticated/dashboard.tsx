@@ -1,26 +1,5 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { useQuery } from "@tanstack/react-query";
-import { useState } from "react";
-import { supabase } from "@/integrations/supabase/client";
-import { usePortalUser } from "@/hooks/usePortalUser";
-import { KpiCard, formatINR, formatPct } from "@/components/portal/KpiCard";
-import {
-  Target,
-  TrendingUp,
-  Wallet,
-  CalendarRange,
-  Trophy,
-  Activity,
-  Users,
-  Search,
-  ArrowUpDown,
-  Building,
-  TrendingDown,
-  AlertTriangle,
-  ArrowRight,
-  Shield,
-  FileSpreadsheet
-} from "lucide-react";
+import { useMemo, useState } from "react";
 import {
   ResponsiveContainer,
   LineChart,
@@ -33,234 +12,236 @@ import {
   BarChart,
   Bar,
 } from "recharts";
+import {
+  Activity,
+  AlertTriangle,
+  ArrowRight,
+  Building,
+  CalendarRange,
+  Search,
+  Shield,
+  Target,
+  TrendingUp,
+  Trophy,
+  Users,
+  Wallet,
+} from "lucide-react";
+import { usePortalUser } from "@/hooks/usePortalUser";
+import { usePortalPerformanceData } from "@/hooks/usePortalPerformance";
+import { KpiCard, formatINR, formatPct } from "@/components/portal/KpiCard";
 import { Input } from "@/components/ui/input";
+import {
+  aggregateByField,
+  buildPerformanceRows,
+  buildRankings,
+  buildScopeTrend,
+} from "@/lib/analytics";
+import {
+  isGlobalRole,
+  isManagerialRole,
+  monthLabel,
+  normalizeRole,
+  performanceStatus,
+} from "@/lib/portal";
 
 export const Route = createFileRoute("/_authenticated/dashboard")({
   head: () => ({
-    meta: [{ title: "Dashboard · Sales Performance Portal" }],
+    meta: [{ title: "Dashboard · Pharmaceutical Sales Portal" }],
   }),
   component: DashboardPage,
 });
 
-const MONTHS_FISCAL = [
-  { name: "Apr", m: 4 },
-  { name: "May", m: 5 },
-  { name: "Jun", m: 6 },
-  { name: "Jul", m: 7 },
-  { name: "Aug", m: 8 },
-  { name: "Sep", m: 9 },
-  { name: "Oct", m: 10 },
-  { name: "Nov", m: 11 },
-  { name: "Dec", m: 12 },
-  { name: "Jan", m: 1 },
-  { name: "Feb", m: 2 },
-  { name: "Mar", m: 3 },
-];
-
-function isMonthInYtd(m: number, currentMonth: number): boolean {
-  if (currentMonth >= 4) {
-    return m >= 4 && m <= currentMonth;
-  } else {
-    return m >= 4 || m <= currentMonth;
-  }
-}
-
-function num(v: unknown) {
-  return (typeof v === "string" ? parseFloat(v) : (v as number)) || 0;
-}
-
 function DashboardPage() {
   const { data: me, isLoading: meLoading } = usePortalUser();
-  const year = new Date().getFullYear();
-  const month = new Date().getMonth() + 1; // 1-12
-
-  // Filters for Manager table
+  const { data, isLoading } = usePortalPerformanceData();
   const [teamSearch, setTeamSearch] = useState("");
-  const [teamSort, setTeamSort] = useState<"name" | "ach" | "growth">("ach");
-  const [teamSortDir, setTeamSortDir] = useState<"asc" | "desc">("desc");
 
-  const empId = me?.employee.id;
-  const userRole = me?.employee.role || "be_mr";
+  const rows = useMemo(() => {
+    if (!data) return [];
+    return buildPerformanceRows(data.employees, data.sales, data.targets);
+  }, [data]);
 
-  // Fetch all required data dynamically based on user role
-  const { data, isLoading } = useQuery({
-    enabled: !!empId,
-    queryKey: ["dashboard-data", empId, userRole, year, month],
-    queryFn: async () => {
-      let employeesList: any[] = [];
-      let salesList: any[] = [];
-      let targetsList: any[] = [];
+  const meRow = rows.find((row) => row.employee_code === me?.employee.employee_code);
+  const role = normalizeRole(me?.role ?? me?.employee.role);
 
-      if (userRole === "admin" || userRole === "management") {
-        // Fetch all data
-        const [empRes, salesRes, targetRes] = await Promise.all([
-          supabase.from("employees").select("*"),
-          supabase.from("monthly_sales").select("*").eq("year", year),
-          supabase.from("monthly_targets").select("*").eq("year", year),
-        ]);
-        employeesList = empRes.data || [];
-        salesList = salesRes.data || [];
-        targetsList = targetRes.data || [];
-      } else if (userRole === "manager") {
-        // Fetch reports + self
-        const { data: reports } = await supabase
-          .from("employees")
-          .select("*")
-          .or(`manager_id.eq.${empId},id.eq.${empId}`);
-        employeesList = reports || [];
-        const empIds = employeesList.map((e) => e.id);
+  const scopedRows = useMemo(() => {
+    if (!me) return [];
+    if (isGlobalRole(role)) return rows;
+    if (isManagerialRole(role)) return rows;
+    return rows.filter((row) => row.employee_code === me.employee.employee_code);
+  }, [me, rows, role]);
 
-        if (empIds.length > 0) {
-          const [salesRes, targetRes] = await Promise.all([
-            supabase.from("monthly_sales").select("*").in("employee_id", empIds).eq("year", year),
-            supabase.from("monthly_targets").select("*").in("employee_id", empIds).eq("year", year),
-          ]);
-          salesList = salesRes.data || [];
-          targetsList = targetRes.data || [];
-        }
-      } else {
-        // BE / MR - Self only
-        const [empRes, salesRes, targetRes] = await Promise.all([
-          supabase.from("employees").select("*").eq("id", empId!).single(),
-          supabase.from("monthly_sales").select("*").eq("employee_id", empId!).eq("year", year),
-          supabase.from("monthly_targets").select("*").eq("employee_id", empId!).eq("year", year),
-        ]);
-        employeesList = empRes.data ? [empRes.data] : [];
-        salesList = salesRes.data || [];
-        targetsList = targetRes.data || [];
-      }
+  const trend = useMemo(() => {
+    if (!data || !me) return [];
+    return buildScopeTrend(
+      rows.filter((row) => row.employee_code === me.employee.employee_code),
+      data.sales,
+      data.targets,
+    );
+  }, [data, me, rows]);
 
-      return { employees: employeesList, sales: salesList, targets: targetsList };
-    },
-  });
+  const rankings = useMemo(() => buildRankings(scopedRows), [scopedRows]);
+  const companySummary = useMemo(() => {
+    const sales = scopedRows.reduce((sum, row) => sum + row.ytd_sales, 0);
+    const target = scopedRows.reduce((sum, row) => sum + row.ytd_target, 0);
+    return {
+      sales,
+      target,
+      achievement: target > 0 ? (sales / target) * 100 : 0,
+    };
+  }, [scopedRows]);
+
+  const chartData = useMemo(() => {
+    if (!data || !me) return [];
+    return buildScopeTrend(
+      rows.filter((row) => row.employee_code === me.employee.employee_code),
+      data.sales,
+      data.targets,
+    ).map((point) => ({
+      month: point.label,
+      Sales: point.sales,
+      Target: point.target,
+    }));
+  }, [data, me, rows]);
 
   if (meLoading || isLoading) return <SkeletonGrid />;
 
-  if (!me) {
+  if (!me || !meRow) {
     return (
       <div className="kpi-card p-6 text-center">
-        <p className="text-sm text-muted-foreground">No employee profile linked to this account.</p>
+        <p className="text-sm text-muted-foreground">
+          No employee profile is linked to this account yet.
+        </p>
       </div>
     );
   }
 
-  const employees = data?.employees || [];
-  const sales = data?.sales || [];
-  const targets = data?.targets || [];
+  if (!me.employee.active) {
+    return (
+      <div className="kpi-card p-6 text-center text-sm text-muted-foreground">
+        Your account is inactive. Please contact the admin team.
+      </div>
+    );
+  }
 
-  // Helper calculations
-  const getEmployeeStats = (employeeUuid: string) => {
-    const empSales = sales.filter((s) => s.employee_id === employeeUuid);
-    const empTargets = targets.filter((t) => t.employee_id === employeeUuid);
+  const currentStatus = performanceStatus(meRow.ytd_achievement_pct || meRow.achievement_pct);
+  const underperformingCount = scopedRows.filter((row) => row.ytd_achievement_pct < 80).length;
 
-    const curSales = empSales.filter((s) => s.month === month).reduce((a, b) => a + num(b.sales_amount), 0);
-    const curTarget = empTargets.filter((t) => t.month === month).reduce((a, b) => a + num(b.target_amount), 0);
-    const curPYSales = empSales.filter((s) => s.month === month).reduce((a, b) => a + num(b.previous_year_sales), 0);
-
-    const ytdSales = empSales.filter((s) => isMonthInYtd(s.month, month)).reduce((a, b) => a + num(b.sales_amount), 0);
-    const ytdTarget = empTargets.filter((t) => isMonthInYtd(t.month, month)).reduce((a, b) => a + num(b.target_amount), 0);
-
-    const ach = curTarget > 0 ? (curSales / curTarget) * 100 : 0;
-    const growth = curPYSales > 0 ? ((curSales - curPYSales) / curPYSales) * 100 : 0;
-    const ytdAch = ytdTarget > 0 ? (ytdSales / ytdTarget) * 100 : 0;
-
-    return { curSales, curTarget, ach, growth, ytdSales, ytdTarget, ytdAch };
-  };
-
-  // Rendering logic based on role
-  if (userRole === "be_mr") {
-    const stats = getEmployeeStats(empId!);
-    const alertActive = stats.ach < 80;
-    const salesNeeded = Math.max(0, stats.curTarget - stats.curSales);
-
-    const chartData = MONTHS_FISCAL.map((item) => {
-      const ms = sales.filter((s) => s.month === item.m).reduce((a, b) => a + num(b.sales_amount), 0);
-      const mt = targets.filter((t) => t.month === item.m).reduce((a, b) => a + num(b.target_amount), 0);
-      return { m: item.name, Sales: ms, Target: mt };
-    });
+  if (!isManagerialRole(role)) {
+    const gap = meRow.target_gap;
+    const warning = meRow.achievement_pct < 80;
 
     return (
       <div className="space-y-5">
-        <section className="flex justify-between items-start">
-          <div>
-            <h1 className="text-xl font-bold tracking-tight">Performance Portal</h1>
-            <p className="text-xs text-muted-foreground">{me.employee.name} · {me.employee.employee_id}</p>
-          </div>
-          <span className="text-[11px] px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-500 font-medium">
-            Active · {me.employee.hq}
-          </span>
+        <section className="flex flex-col gap-1">
+          <h1 className="text-xl font-bold tracking-tight">Performance Portal</h1>
+          <p className="text-xs text-muted-foreground">
+            {me.employee.employee_name} · {me.employee.employee_code}
+          </p>
         </section>
-
-        {alertActive && (
-          <div className="p-3.5 rounded-xl border border-destructive/20 bg-destructive/5 text-destructive flex gap-3 items-start animate-pulse">
-            <AlertTriangle className="size-5 shrink-0 mt-0.5" />
-            <div>
-              <p className="text-xs font-semibold">Achievement Warning (&lt;80%)</p>
-              <p className="text-[11px] opacity-90 mt-0.5">
-                Your monthly achievement is {stats.ach.toFixed(1)}%. You need ₹{salesNeeded.toLocaleString("en-IN")} more sales to meet this month's target.
-              </p>
-            </div>
-          </div>
-        )}
 
         <section className="grid grid-cols-2 gap-3">
           <KpiCard
-            label="Current Month Sales"
-            value={formatINR(stats.curSales)}
+            label="MTD Sales"
+            value={formatINR(meRow.current_sales)}
             icon={<Wallet className="size-4" />}
-            trend={stats.growth}
-            hint="vs last year"
+            trend={meRow.growth_pct}
+            hint="vs previous year"
           />
           <KpiCard
-            label="Current Month Target"
-            value={formatINR(stats.curTarget)}
+            label="MTD Target"
+            value={formatINR(meRow.current_target)}
             icon={<Target className="size-4" />}
             accent="warning"
-            hint={`Gap: ${formatINR(salesNeeded)}`}
+            hint={`Gap ${formatINR(gap)}`}
           />
           <KpiCard
             label="Achievement %"
-            value={formatPct(stats.ach)}
+            value={formatPct(meRow.achievement_pct)}
             icon={<Trophy className="size-4" />}
-            accent={stats.ach >= 100 ? "success" : stats.ach >= 80 ? "primary" : "destructive"}
-            hint="Monthly progress"
+            accent={
+              meRow.achievement_pct >= 100
+                ? "success"
+                : meRow.achievement_pct >= 80
+                  ? "primary"
+                  : "destructive"
+            }
+            hint={currentStatus}
           />
           <KpiCard
             label="Growth %"
-            value={formatPct(stats.growth)}
+            value={formatPct(meRow.growth_pct)}
             icon={<TrendingUp className="size-4" />}
-            accent={stats.growth >= 0 ? "success" : "destructive"}
+            accent={meRow.growth_pct >= 0 ? "success" : "destructive"}
             hint="vs previous year"
           />
         </section>
 
         <section className="grid grid-cols-2 gap-3">
-          <KpiCard label="YTD Sales" value={formatINR(stats.ytdSales)} icon={<Activity className="size-4" />} />
-          <KpiCard label="YTD Target" value={formatINR(stats.ytdTarget)} icon={<CalendarRange className="size-4" />} accent="warning" />
+          <KpiCard
+            label="YTD Sales"
+            value={formatINR(meRow.ytd_sales)}
+            icon={<Activity className="size-4" />}
+          />
+          <KpiCard
+            label="YTD Target"
+            value={formatINR(meRow.ytd_target)}
+            icon={<CalendarRange className="size-4" />}
+            accent="warning"
+          />
           <div className="col-span-2">
             <KpiCard
               label="YTD Achievement %"
-              value={formatPct(stats.ytdAch)}
+              value={formatPct(meRow.ytd_achievement_pct)}
               icon={<Trophy className="size-4" />}
-              accent={stats.ytdAch >= 100 ? "success" : stats.ytdAch >= 80 ? "primary" : "destructive"}
-              hint={`${formatINR(stats.ytdSales)} achieved of ${formatINR(stats.ytdTarget)} YTD target`}
+              accent={
+                meRow.ytd_achievement_pct >= 100
+                  ? "success"
+                  : meRow.ytd_achievement_pct >= 80
+                    ? "primary"
+                    : "destructive"
+              }
+              hint={`${formatINR(meRow.ytd_sales)} of ${formatINR(meRow.ytd_target)}`}
             />
           </div>
         </section>
 
+        {warning && (
+          <div className="p-3.5 rounded-xl border border-destructive/20 bg-destructive/5 text-destructive flex gap-3 items-start">
+            <AlertTriangle className="size-5 shrink-0 mt-0.5" />
+            <div>
+              <p className="text-xs font-semibold">Achievement Warning</p>
+              <p className="text-[11px] opacity-90 mt-0.5">
+                You need {formatINR(gap)} more to reach the current month target.
+              </p>
+            </div>
+          </div>
+        )}
+
         <section className="kpi-card p-4">
           <div className="flex items-center justify-between mb-3">
-            <h2 className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Monthly Sales vs Target</h2>
+            <h2 className="text-xs font-bold uppercase tracking-wider text-muted-foreground">
+              Monthly Sales vs Target
+            </h2>
+            <span className="text-[11px] text-muted-foreground">
+              Current month: {monthLabel(new Date().getMonth() + 1)}
+            </span>
           </div>
           <div className="h-60">
             <ResponsiveContainer width="100%" height="100%">
               <LineChart data={chartData} margin={{ top: 5, right: 8, left: -20, bottom: 0 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
-                <XAxis dataKey="m" tick={{ fontSize: 10 }} stroke="var(--color-muted-foreground)" />
+                <XAxis
+                  dataKey="month"
+                  tick={{ fontSize: 10 }}
+                  stroke="var(--color-muted-foreground)"
+                />
                 <YAxis
                   tick={{ fontSize: 10 }}
                   stroke="var(--color-muted-foreground)"
-                  tickFormatter={(v: number) => (v >= 100000 ? `${(v / 100000).toFixed(0)}L` : v >= 1000 ? `${(v / 1000).toFixed(0)}k` : `${v}`)}
+                  tickFormatter={(value: number) =>
+                    value >= 100000 ? `${(value / 100000).toFixed(0)}L` : `${value}`
+                  }
                 />
                 <Tooltip
                   contentStyle={{
@@ -269,11 +250,23 @@ function DashboardPage() {
                     borderRadius: 8,
                     fontSize: 11,
                   }}
-                  formatter={(v: number) => formatINR(v)}
+                  formatter={(value: number) => formatINR(value)}
                 />
                 <Legend wrapperStyle={{ fontSize: 10 }} />
-                <Line type="monotone" dataKey="Target" stroke="var(--color-chart-3)" strokeWidth={1.5} dot={false} />
-                <Line type="monotone" dataKey="Sales" stroke="var(--color-chart-1)" strokeWidth={2} dot={{ r: 2 }} />
+                <Line
+                  type="monotone"
+                  dataKey="Target"
+                  stroke="var(--color-chart-3)"
+                  strokeWidth={1.5}
+                  dot={false}
+                />
+                <Line
+                  type="monotone"
+                  dataKey="Sales"
+                  stroke="var(--color-chart-1)"
+                  strokeWidth={2}
+                  dot={{ r: 2 }}
+                />
               </LineChart>
             </ResponsiveContainer>
           </div>
@@ -282,279 +275,271 @@ function DashboardPage() {
     );
   }
 
-  if (userRole === "manager") {
-    const myStats = getEmployeeStats(empId!);
-    // Direct reports (excluding manager self for calculations)
-    const reports = employees.filter((e) => e.id !== empId);
-
-    const teamRows = reports.map((emp) => {
-      const s = getEmployeeStats(emp.id);
-      return {
-        id: emp.id,
-        code: emp.employee_id,
-        name: emp.name,
-        hq: emp.hq,
-        sales: s.curSales,
-        target: s.curTarget,
-        ach: s.ach,
-        growth: s.growth,
-      };
-    });
-
-    const teamSales = teamRows.reduce((a, b) => a + b.sales, 0);
-    const teamTarget = teamRows.reduce((a, b) => a + b.target, 0);
-    const teamAch = teamTarget > 0 ? (teamSales / teamTarget) * 100 : 0;
-
-    const underperformingCount = teamRows.filter((r) => r.ach < 80).length;
-
-    // Perform sorting/filtering
-    const filteredRows = teamRows
-      .filter((r) => r.name.toLowerCase().includes(teamSearch.toLowerCase()) || r.code.toLowerCase().includes(teamSearch.toLowerCase()))
-      .sort((a, b) => {
-        let valA = a[teamSort];
-        let valB = b[teamSort];
-        if (typeof valA === "string") {
-          return teamSortDir === "asc"
-            ? (valA as string).localeCompare(valB as string)
-            : (valB as string).localeCompare(valA as string);
-        }
-        return teamSortDir === "asc" ? (valA as number) - (valB as number) : (valB as number) - (valA as number);
-      });
-
-    const topPerformers = [...teamRows].sort((a, b) => b.ach - a.ach).slice(0, 3);
-    const bottomPerformers = [...teamRows].sort((a, b) => a.ach - b.ach).slice(0, 3);
-
+  const search = teamSearch.trim().toLowerCase();
+  const filteredRows = scopedRows.filter((row) => {
+    if (!search) return true;
     return (
-      <div className="space-y-5">
-        <section>
-          <h1 className="text-xl font-bold tracking-tight">Team Overview</h1>
-          <p className="text-xs text-muted-foreground">{me.employee.name} · manager views</p>
-        </section>
-
-        {/* Daily summary notification */}
-        <div className="p-3.5 rounded-xl border border-primary/20 bg-primary/5 text-primary flex gap-3 items-start">
-          <Activity className="size-5 shrink-0 mt-0.5" />
-          <div>
-            <p className="text-xs font-semibold">Daily Team Performance Digest</p>
-            <p className="text-[11px] opacity-90 mt-0.5">
-              Team overall monthly achievement is at {teamAch.toFixed(1)}%. {underperformingCount} team members are under 80% achievement threshold today.
-            </p>
-          </div>
-        </div>
-
-        <section className="grid grid-cols-3 gap-2">
-          <KpiCard label="Team Sales" value={formatINR(teamSales)} icon={<Wallet className="size-4" />} />
-          <KpiCard label="Team Target" value={formatINR(teamTarget)} icon={<Target className="size-4" />} accent="warning" />
-          <KpiCard
-            label="Team Achievement"
-            value={formatPct(teamAch)}
-            icon={<Trophy className="size-4" />}
-            accent={teamAch >= 80 ? "success" : "destructive"}
-          />
-        </section>
-
-        {/* Leaderboards */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div className="kpi-card p-3.5 space-y-2">
-            <h3 className="text-xs font-bold uppercase tracking-wider text-emerald-500 flex items-center gap-1">
-              <Trophy className="size-3.5" /> Top Performers
-            </h3>
-            <div className="divide-y text-xs">
-              {topPerformers.map((p, idx) => (
-                <div key={p.id} className="py-2 flex justify-between">
-                  <span>{idx + 1}. {p.name} ({p.hq})</span>
-                  <span className="font-semibold text-emerald-500">{formatPct(p.ach)}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-          <div className="kpi-card p-3.5 space-y-2">
-            <h3 className="text-xs font-bold uppercase tracking-wider text-destructive flex items-center gap-1">
-              <TrendingDown className="size-3.5" /> Below Target
-            </h3>
-            <div className="divide-y text-xs">
-              {bottomPerformers.map((p, idx) => (
-                <div key={p.id} className="py-2 flex justify-between">
-                  <span>{idx + 1}. {p.name} ({p.hq})</span>
-                  <span className="font-semibold text-destructive">{formatPct(p.ach)}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-
-        {/* Team Table */}
-        <section className="kpi-card p-4 space-y-3">
-          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
-            <h2 className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Team Member Performance</h2>
-            <div className="relative max-w-xs w-full">
-              <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
-              <Input
-                placeholder="Search team..."
-                value={teamSearch}
-                onChange={(e) => setTeamSearch(e.target.value)}
-                className="pl-8 h-8 text-xs bg-secondary"
-              />
-            </div>
-          </div>
-
-          <div className="overflow-x-auto border rounded-lg">
-            <table className="w-full text-xs text-left">
-              <thead className="bg-secondary text-muted-foreground font-semibold border-b">
-                <tr>
-                  <th className="p-3">Employee Code</th>
-                  <th className="p-3">Name</th>
-                  <th className="p-3">HQ</th>
-                  <th className="p-3 text-right">Sales</th>
-                  <th className="p-3 text-right">Target</th>
-                  <th className="p-3 text-right">Ach %</th>
-                  <th className="p-3 text-right">Growth %</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y">
-                {filteredRows.map((r) => (
-                  <tr key={r.id} className="hover:bg-accent/5">
-                    <td className="p-3 font-medium">{r.code}</td>
-                    <td className="p-3">{r.name}</td>
-                    <td className="p-3">{r.hq}</td>
-                    <td className="p-3 text-right">{formatINR(r.sales)}</td>
-                    <td className="p-3 text-right">{formatINR(r.target)}</td>
-                    <td className="p-3 text-right font-semibold">{formatPct(r.ach)}</td>
-                    <td className="p-3 text-right">{formatPct(r.growth)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </section>
-      </div>
+      row.employee_name.toLowerCase().includes(search) ||
+      row.employee_code.toLowerCase().includes(search) ||
+      (row.hq ?? "").toLowerCase().includes(search) ||
+      (row.state ?? "").toLowerCase().includes(search)
     );
-  }
+  });
 
-  if (userRole === "management" || userRole === "admin") {
-    // Calculate management dashboard
-    const allReports = employees.map((emp) => {
-      const s = getEmployeeStats(emp.id);
-      return {
-        id: emp.id,
-        code: emp.employee_id,
-        name: emp.name,
-        hq: emp.hq,
-        state: emp.state,
-        managerId: emp.manager_id,
-        ...s,
-      };
-    });
+  const stateRankings = isGlobalRole(role) ? aggregateByField(rows, "state") : [];
+  const hqRankings = isGlobalRole(role) ? aggregateByField(rows, "hq") : [];
+  const managerRankings = isGlobalRole(role) ? aggregateByField(rows, "manager_code") : [];
 
-    const overallSales = allReports.reduce((a, b) => a + b.curSales, 0);
-    const overallTarget = allReports.reduce((a, b) => a + b.curTarget, 0);
-    const overallAch = overallTarget > 0 ? (overallSales / overallTarget) * 100 : 0;
-
-    // State Performance Map
-    const stateMap: Record<string, { sales: number; target: number }> = {};
-    allReports.forEach((r) => {
-      if (!r.state) return;
-      if (!stateMap[r.state]) stateMap[r.state] = { sales: 0, target: 0 };
-      stateMap[r.state].sales += r.curSales;
-      stateMap[r.state].target += r.curTarget;
-    });
-    const stateRankings = Object.keys(stateMap)
-      .map((st) => ({
-        state: st,
-        sales: stateMap[st].sales,
-        target: stateMap[st].target,
-        ach: stateMap[st].target > 0 ? (stateMap[st].sales / stateMap[st].target) * 100 : 0,
-      }))
-      .sort((a, b) => b.ach - a.ach);
-
-    // Leaderboards (Top 20 / Bottom 20)
-    const top20 = [...allReports].sort((a, b) => b.ach - a.ach).slice(0, 20);
-    const bottom20 = [...allReports].sort((a, b) => a.ach - b.ach).slice(0, 20);
-
-    return (
-      <div className="space-y-5">
-        <section className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-          <div>
-            <h1 className="text-xl font-bold tracking-tight">Organization Performance</h1>
-            <p className="text-xs text-muted-foreground">Adonis National Sales Dashboard</p>
-          </div>
-          {userRole === "admin" && (
-            <Link to="/data" className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border bg-card text-xs font-semibold text-foreground hover:bg-accent transition">
-              <Shield className="size-4 text-primary" /> Admin Panel <ArrowRight className="size-3.5" />
-            </Link>
-          )}
-        </section>
-
-        {/* Weekly Company summary alert */}
-        <div className="p-3.5 rounded-xl border border-emerald-500/20 bg-emerald-500/5 text-emerald-600 dark:text-emerald-400 flex gap-3 items-start">
-          <Building className="size-5 shrink-0 mt-0.5" />
-          <div>
-            <p className="text-xs font-semibold">Weekly Company Performance digest</p>
-            <p className="text-[11px] opacity-90 mt-0.5">
-              Leaderboard: **{stateRankings[0]?.state || "N/A"}** leads states with {stateRankings[0]?.ach.toFixed(0)}% achievement. Overall company monthly target progress is at {overallAch.toFixed(1)}%.
-            </p>
-          </div>
+  return (
+    <div className="space-y-5">
+      <section className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
+        <div>
+          <h1 className="text-xl font-bold tracking-tight">
+            {isGlobalRole(role) ? "Organization Performance" : "Team Overview"}
+          </h1>
+          <p className="text-xs text-muted-foreground">
+            {me.employee.employee_name} · {me.employee.employee_code} ·{" "}
+            {me.employee.designation ?? "Field Force"}
+          </p>
         </div>
+        {me.canManageUsers && (
+          <Link
+            to="/data"
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border bg-card text-xs font-semibold text-foreground hover:bg-accent transition"
+          >
+            <Shield className="size-4 text-primary" />
+            Admin Panel
+            <ArrowRight className="size-3.5" />
+          </Link>
+        )}
+      </section>
 
-        <section className="grid grid-cols-2 md:grid-cols-4 gap-3">
-          <KpiCard label="National Sales" value={formatINR(overallSales)} icon={<Wallet className="size-4" />} />
-          <KpiCard label="National Target" value={formatINR(overallTarget)} icon={<Target className="size-4" />} accent="warning" />
-          <KpiCard
-            label="Overall Achievement"
-            value={formatPct(overallAch)}
-            icon={<Trophy className="size-4" />}
-            accent={overallAch >= 80 ? "success" : "destructive"}
-          />
-          <KpiCard
-            label="Reporting Force"
-            value={allReports.length.toString()}
-            icon={<Users className="size-4" />}
-            accent="primary"
-          />
-        </section>
+      <div className="p-3.5 rounded-xl border border-emerald-500/20 bg-emerald-500/5 text-emerald-700 dark:text-emerald-400 flex gap-3 items-start">
+        <Building className="size-5 shrink-0 mt-0.5" />
+        <div>
+          <p className="text-xs font-semibold">Performance snapshot</p>
+          <p className="text-[11px] opacity-90 mt-0.5">
+            {isGlobalRole(role)
+              ? `Company achievement is ${companySummary.achievement.toFixed(1)}% with ${underperformingCount} employees under 80%.`
+              : `Your visible team achievement is ${companySummary.achievement.toFixed(1)}% with ${underperformingCount} members under 80%.`}
+          </p>
+        </div>
+      </div>
 
-        {/* State Rankings */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <section className="kpi-card p-4 space-y-3">
-            <h3 className="text-xs font-bold uppercase tracking-wider text-muted-foreground">State Rankings</h3>
+      <section className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <KpiCard
+          label={isGlobalRole(role) ? "Company Sales" : "Team Sales"}
+          value={formatINR(companySummary.sales)}
+          icon={<Wallet className="size-4" />}
+        />
+        <KpiCard
+          label={isGlobalRole(role) ? "Company Target" : "Team Target"}
+          value={formatINR(companySummary.target)}
+          icon={<Target className="size-4" />}
+          accent="warning"
+        />
+        <KpiCard
+          label={isGlobalRole(role) ? "Company Achievement" : "Team Achievement"}
+          value={formatPct(companySummary.achievement)}
+          icon={<Trophy className="size-4" />}
+          accent={companySummary.achievement >= 80 ? "success" : "destructive"}
+        />
+        <KpiCard
+          label="Visible Members"
+          value={String(scopedRows.length)}
+          icon={<Users className="size-4" />}
+          accent="primary"
+        />
+      </section>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <section className="kpi-card p-4 space-y-3">
+          <div className="flex items-center justify-between">
+            <h3 className="text-xs font-bold uppercase tracking-wider text-muted-foreground">
+              {isGlobalRole(role) ? "State-wise Performance" : "Monthly Trend"}
+            </h3>
+            <span className="text-[11px] text-muted-foreground">
+              {isGlobalRole(role) ? "Top 8" : "YTD"}
+            </span>
+          </div>
+
+          {isGlobalRole(role) ? (
             <div className="h-60">
               <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={stateRankings.slice(0, 8)} layout="vertical" margin={{ top: 5, right: 10, left: -20, bottom: 5 }}>
+                <BarChart
+                  data={stateRankings.slice(0, 8)}
+                  layout="vertical"
+                  margin={{ top: 5, right: 10, left: -20, bottom: 5 }}
+                >
                   <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
-                  <XAxis type="number" tick={{ fontSize: 9 }} stroke="var(--color-muted-foreground)" />
-                  <YAxis dataKey="state" type="category" tick={{ fontSize: 9 }} stroke="var(--color-muted-foreground)" width={80} />
-                  <Tooltip formatter={(v: number) => `${v.toFixed(1)}%`} />
-                  <Bar dataKey="ach" fill="var(--color-chart-1)" radius={[0, 4, 4, 0]} />
+                  <XAxis
+                    type="number"
+                    tick={{ fontSize: 9 }}
+                    stroke="var(--color-muted-foreground)"
+                  />
+                  <YAxis
+                    dataKey="label"
+                    type="category"
+                    tick={{ fontSize: 9 }}
+                    stroke="var(--color-muted-foreground)"
+                    width={80}
+                  />
+                  <Tooltip formatter={(value: number) => `${value.toFixed(1)}%`} />
+                  <Bar
+                    dataKey="achievement_pct"
+                    fill="var(--color-chart-1)"
+                    radius={[0, 4, 4, 0]}
+                  />
                 </BarChart>
               </ResponsiveContainer>
             </div>
-          </section>
+          ) : (
+            <div className="h-60">
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={trend} margin={{ top: 5, right: 8, left: -20, bottom: 0 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
+                  <XAxis
+                    dataKey="label"
+                    tick={{ fontSize: 10 }}
+                    stroke="var(--color-muted-foreground)"
+                  />
+                  <YAxis tick={{ fontSize: 10 }} stroke="var(--color-muted-foreground)" />
+                  <Tooltip />
+                  <Legend wrapperStyle={{ fontSize: 10 }} />
+                  <Line
+                    type="monotone"
+                    dataKey="sales"
+                    stroke="var(--color-chart-1)"
+                    strokeWidth={2}
+                    dot={{ r: 2 }}
+                  />
+                  <Line
+                    type="monotone"
+                    dataKey="target"
+                    stroke="var(--color-chart-3)"
+                    strokeWidth={1.5}
+                    dot={false}
+                  />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+          )}
+        </section>
 
-          {/* Top Leaderboard */}
-          <section className="kpi-card p-4 space-y-2">
-            <h3 className="text-xs font-bold uppercase tracking-wider text-emerald-500">Top 5 Performers (National)</h3>
-            <div className="divide-y text-xs">
-              {top20.slice(0, 5).map((p, idx) => (
-                <div key={p.id} className="py-2.5 flex justify-between">
-                  <span>{idx + 1}. {p.name} ({p.hq})</span>
-                  <span className="font-semibold text-emerald-500">{formatPct(p.ach)}</span>
+        <section className="kpi-card p-4 space-y-2">
+          <h3 className="text-xs font-bold uppercase tracking-wider text-emerald-500">
+            Top Performers
+          </h3>
+          <div className="divide-y text-xs">
+            {rankings.top5.map((row, index) => (
+              <div key={row.employee_code} className="py-2.5 flex justify-between">
+                <span>
+                  {index + 1}. {row.employee_name} ({row.employee_code})
+                </span>
+                <span className="font-semibold text-emerald-500">
+                  {formatPct(row.ytd_achievement_pct)}
+                </span>
+              </div>
+            ))}
+          </div>
+          <div className="pt-2 border-t">
+            <h3 className="text-xs font-bold uppercase tracking-wider text-destructive">
+              Bottom Performers
+            </h3>
+            <div className="divide-y text-xs mt-1">
+              {rankings.bottom5.map((row, index) => (
+                <div key={row.employee_code} className="py-2.5 flex justify-between">
+                  <span>
+                    {index + 1}. {row.employee_name} ({row.employee_code})
+                  </span>
+                  <span className="font-semibold text-destructive">
+                    {formatPct(row.ytd_achievement_pct)}
+                  </span>
                 </div>
               ))}
             </div>
-          </section>
-        </div>
+          </div>
+        </section>
       </div>
-    );
-  }
 
-  return null;
+      {isGlobalRole(role) && (
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+          <KpiCard
+            label="Best State"
+            value={stateRankings[0]?.label ?? "N/A"}
+            hint={formatPct(stateRankings[0]?.achievement_pct ?? 0)}
+          />
+          <KpiCard
+            label="Best HQ"
+            value={hqRankings[0]?.label ?? "N/A"}
+            hint={formatPct(hqRankings[0]?.achievement_pct ?? 0)}
+          />
+          <KpiCard
+            label="Best Manager"
+            value={managerRankings[0]?.label ?? "N/A"}
+            hint={formatPct(managerRankings[0]?.achievement_pct ?? 0)}
+          />
+        </div>
+      )}
+
+      <section className="kpi-card p-4 space-y-3">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+          <h2 className="text-xs font-bold uppercase tracking-wider text-muted-foreground">
+            {isGlobalRole(role) ? "Organization Ranking" : "Team Ranking"}
+          </h2>
+          <div className="relative max-w-xs w-full">
+            <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+            <Input
+              placeholder="Search employees..."
+              value={teamSearch}
+              onChange={(event) => setTeamSearch(event.target.value)}
+              className="pl-8 h-8 text-xs bg-secondary"
+            />
+          </div>
+        </div>
+
+        <div className="overflow-x-auto border rounded-lg">
+          <table className="w-full text-xs text-left">
+            <thead className="bg-secondary text-muted-foreground font-semibold border-b">
+              <tr>
+                <th className="p-3">Code</th>
+                <th className="p-3">Name</th>
+                <th className="p-3">HQ</th>
+                <th className="p-3">State</th>
+                <th className="p-3 text-right">Sales</th>
+                <th className="p-3 text-right">Target</th>
+                <th className="p-3 text-right">Ach %</th>
+                <th className="p-3 text-right">Growth %</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y">
+              {filteredRows.map((row) => (
+                <tr key={row.employee_code} className="hover:bg-accent/5">
+                  <td className="p-3 font-medium">{row.employee_code}</td>
+                  <td className="p-3">{row.employee_name}</td>
+                  <td className="p-3">{row.hq ?? "N/A"}</td>
+                  <td className="p-3">{row.state ?? "N/A"}</td>
+                  <td className="p-3 text-right">{formatINR(row.ytd_sales)}</td>
+                  <td className="p-3 text-right">{formatINR(row.ytd_target)}</td>
+                  <td className="p-3 text-right font-semibold">
+                    {formatPct(row.ytd_achievement_pct)}
+                  </td>
+                  <td className="p-3 text-right">{formatPct(row.growth_pct)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+  );
 }
 
 function SkeletonGrid() {
   return (
     <div className="grid grid-cols-2 gap-3">
-      {Array.from({ length: 6 }).map((_, i) => (
-        <div key={i} className="kpi-card p-4 h-28 animate-pulse" />
+      {Array.from({ length: 6 }).map((_, index) => (
+        <div key={index} className="kpi-card p-4 h-28 animate-pulse" />
       ))}
     </div>
   );

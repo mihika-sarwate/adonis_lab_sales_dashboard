@@ -1,168 +1,305 @@
 import { createServerFn } from "@tanstack/react-start";
-import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 import { z } from "zod";
+import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
+import {
+  buildPerformanceRows,
+  buildRankings,
+  companySummary,
+  aggregateByField,
+} from "@/lib/analytics";
+import {
+  currentFinancialYear,
+  isGlobalRole,
+  isManagerialRole,
+  normalizeRole,
+  type PortalEmployee,
+} from "@/lib/portal";
 
 const AskInput = z.object({
   question: z.string().min(1).max(2000),
 });
 
-type RowSale = { employee_id: string; year: number; month: number; sales_amount: number; previous_year_sales: number };
-type RowTarget = { employee_id: string; year: number; month: number; target_amount: number };
-type EmpRow = { id: string; employee_id: string; name: string; manager_id: string | null; hq: string | null; designation: string | null; state: string | null; role: string | null };
+type AssistantContext = ReturnType<typeof buildContext>;
+type Intent =
+  | "self_achievement"
+  | "self_ytd_achievement"
+  | "sales_needed"
+  | "team_ranking"
+  | "below_80"
+  | "top_performers"
+  | "company_achievement"
+  | "best_state"
+  | "best_hq"
+  | "best_manager"
+  | "team_summary"
+  | "help";
 
-function num(v: unknown): number {
-  const n = typeof v === "string" ? parseFloat(v) : (v as number);
-  return isFinite(n) ? n : 0;
+function formatAmount(value: number) {
+  return new Intl.NumberFormat("en-IN", {
+    style: "currency",
+    currency: "INR",
+    maximumFractionDigits: 0,
+  }).format(value);
+}
+
+function formatPct(value: number) {
+  return `${value.toFixed(1)}%`;
+}
+
+function bulletList(items: string[]) {
+  if (!items.length) return "No matching records were found.";
+  return items.map((item, index) => `${index + 1}. ${item}`).join("\n");
+}
+
+function parseIntent(question: string): Intent {
+  const normalized = question.trim().toLowerCase();
+
+  if (/(top\s*performers?|best\s*performers?|leaders|rankings?)/.test(normalized))
+    return "top_performers";
+  if (/(below\s*80|under\s*80|less\s*than\s*80|low\s*performers?)/.test(normalized))
+    return "below_80";
+  if (/(team\s*ranking|show\s*team\s*ranking|ranking)/.test(normalized)) return "team_ranking";
+  if (/(company\s*achievement|overall\s*achievement|company\s*performance)/.test(normalized))
+    return "company_achievement";
+  if (/(best\s*state|which\s*state|state\s*performing)/.test(normalized)) return "best_state";
+  if (/(best\s*hq|which\s*hq|hq\s*performing)/.test(normalized)) return "best_hq";
+  if (/(best\s*manager|which\s*manager|manager\s*performing)/.test(normalized))
+    return "best_manager";
+  if (/(team\s*summary|team\s*snapshot|team\s*performance)/.test(normalized)) return "team_summary";
+  if (
+    /(ytd.*achievement|achievement.*ytd|year[-\s]*to[-\s]*date\s*achievement|my\s*ytd\s*achievement)/.test(
+      normalized,
+    )
+  ) {
+    return "self_ytd_achievement";
+  }
+  if (
+    /(how\s*much.*sales.*need|how\s*much.*need.*sales|sales\s*needed|needed\s*to\s*reach\s*target|gap\s*to\s*target)/.test(
+      normalized,
+    )
+  ) {
+    return "sales_needed";
+  }
+  if (
+    /(my\s*achievement|what\s*is\s*my\s*achievement|current\s*achievement|achievement\s*%)/.test(
+      normalized,
+    )
+  ) {
+    return "self_achievement";
+  }
+
+  return "help";
+}
+
+function buildContext(
+  me: PortalEmployee,
+  rows: ReturnType<typeof buildPerformanceRows>,
+  question = "",
+) {
+  const current = rows.find((row) => row.employee_code === me.employee_code) ?? rows[0];
+  if (!current) {
+    throw new Error("No performance data available for the current account.");
+  }
+
+  const rankings = buildRankings(rows);
+  const company = companySummary(rows);
+  const stateRankings = aggregateByField(rows, "state");
+  const hqRankings = aggregateByField(rows, "hq");
+  const managerRankings = aggregateByField(rows, "manager_code");
+
+  return {
+    question,
+    rows,
+    self: current,
+    rankings,
+    company,
+    stateRankings,
+    hqRankings,
+    managerRankings,
+  };
+}
+
+function answerSelfAchievement(context: AssistantContext) {
+  return [
+    `Current month achievement: ${formatPct(context.self.achievement_pct)}`,
+    `Current month sales: ${formatAmount(context.self.current_sales)}`,
+    `Current month target: ${formatAmount(context.self.current_target)}`,
+  ].join("\n");
+}
+
+function answerSelfYtdAchievement(context: AssistantContext) {
+  return [
+    `YTD achievement: ${formatPct(context.self.ytd_achievement_pct)}`,
+    `YTD sales: ${formatAmount(context.self.ytd_sales)}`,
+    `YTD target: ${formatAmount(context.self.ytd_target)}`,
+  ].join("\n");
+}
+
+function answerSalesNeeded(context: AssistantContext) {
+  const currentGap = Math.max(0, context.self.target_gap);
+  const ytdGap = Math.max(0, context.self.ytd_target - context.self.ytd_sales);
+
+  if (!currentGap && !ytdGap) {
+    return "You have already met both the current month target and the YTD target.";
+  }
+
+  return [
+    `Sales needed for current month target: ${formatAmount(currentGap)}`,
+    `Sales needed for YTD target: ${formatAmount(ytdGap)}`,
+  ].join("\n");
+}
+
+function answerTeamRanking(context: AssistantContext) {
+  return bulletList(
+    context.rankings.top20
+      .slice(0, 10)
+      .map(
+        (row) =>
+          `${row.employee_name} (${row.employee_code}) - ${formatPct(row.ytd_achievement_pct)}`,
+      ),
+  );
+}
+
+function answerBelow80(context: AssistantContext) {
+  const rows = context.rows.filter((row) => row.ytd_achievement_pct < 80);
+  if (!rows.length) return "No visible employees are below 80% achievement.";
+  return bulletList(
+    rows.map(
+      (row) =>
+        `${row.employee_name} (${row.employee_code}) - ${formatPct(row.ytd_achievement_pct)}`,
+    ),
+  );
+}
+
+function answerTopPerformers(context: AssistantContext) {
+  return bulletList(
+    context.rankings.top5.map(
+      (row) =>
+        `${row.employee_name} (${row.employee_code}) - ${formatPct(row.ytd_achievement_pct)}`,
+    ),
+  );
+}
+
+function answerCompanyAchievement(context: AssistantContext) {
+  return [
+    `Company achievement: ${formatPct(context.company.achievement_pct)}`,
+    `Company sales: ${formatAmount(context.company.sales)}`,
+    `Company target: ${formatAmount(context.company.target)}`,
+    `Average growth: ${formatPct(context.company.average_growth_pct)}`,
+  ].join("\n");
+}
+
+function answerBestBucket(
+  buckets: Array<{ label: string; achievement_pct: number; sales: number; target: number }>,
+  label: string,
+) {
+  const bucket = buckets[0];
+  if (!bucket) return `No ${label.toLowerCase()} data is available.`;
+  return [
+    `Best ${label.toLowerCase()}: ${bucket.label}`,
+    `Achievement: ${formatPct(bucket.achievement_pct)}`,
+    `Sales: ${formatAmount(bucket.sales)}`,
+    `Target: ${formatAmount(bucket.target)}`,
+  ].join("\n");
+}
+
+function answerTeamSummary(context: AssistantContext) {
+  return [
+    `Visible employees: ${context.rows.length}`,
+    `Team sales: ${formatAmount(context.company.sales)}`,
+    `Team target: ${formatAmount(context.company.target)}`,
+    `Team achievement: ${formatPct(context.company.achievement_pct)}`,
+  ].join("\n");
+}
+
+function answerFallback(context: AssistantContext) {
+  const suggestions = [
+    "What is my achievement?",
+    "What is my YTD achievement?",
+    "How much sales do I need?",
+    "Show team ranking.",
+    "Show employees below 80%.",
+    "Show top performers.",
+  ];
+
+  return [
+    `I can answer live from the database for ${context.rows.length} visible employees.`,
+    "Try one of these:",
+    bulletList(suggestions),
+  ].join("\n");
 }
 
 export const askAssistant = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
-  .inputValidator((d: unknown) => AskInput.parse(d))
+  .validator((data: unknown) => AskInput.parse(data))
   .handler(async ({ data, context }) => {
-    const { supabase, userId } = context;
+    const { supabase } = context;
+    const financialYear = currentFinancialYear();
 
-    // Resolve current employee
-    const { data: me, error: meErr } = await supabase
-      .from("employees")
-      .select("id, employee_id, name, manager_id, hq, designation, state, role")
-      .eq("user_id", userId)
+    const { data: profile, error: profileError } = await supabase
+      .from("user_profiles")
+      .select("auth_user_id, employee_code, role")
+      .eq("auth_user_id", context.userId)
       .maybeSingle();
-    if (meErr) throw new Error(meErr.message);
-    if (!me) throw new Error("No employee profile.");
+    if (profileError) throw profileError;
+    if (!profile) throw new Error("No employee profile linked to this account.");
 
-    const now = new Date();
-    const year = now.getFullYear();
-    const month = now.getMonth() + 1;
-    const role = me.role || "be_mr";
+    const { data: employee, error: employeeError } = await supabase
+      .from("employees")
+      .select(
+        "employee_code, employee_name, designation, role, manager_code, hq, state, active, auth_user_id",
+      )
+      .eq("employee_code", profile.employee_code)
+      .maybeSingle();
+    if (employeeError) throw employeeError;
+    if (!employee) throw new Error("Employee record not found.");
 
-    // Self data
-    const [{ data: myTargets = [] }, { data: mySales = [] }] = await Promise.all([
-      supabase.from("monthly_targets").select("employee_id, year, month, target_amount").eq("employee_id", me.id).eq("year", year),
-      supabase.from("monthly_sales").select("employee_id, year, month, sales_amount, previous_year_sales").eq("employee_id", me.id).eq("year", year),
-    ]);
+    const [{ data: employees = [] }, { data: sales = [] }, { data: targets = [] }] =
+      await Promise.all([
+        supabase
+          .from("employees")
+          .select(
+            "employee_code, employee_name, designation, role, manager_code, hq, state, active, auth_user_id",
+          )
+          .order("employee_name"),
+        supabase
+          .from("monthly_sales")
+          .select("employee_code, month, financial_year, sales_amount, previous_year_sales")
+          .eq("financial_year", financialYear),
+        supabase
+          .from("monthly_targets")
+          .select("employee_code, month, financial_year, target_amount")
+          .eq("financial_year", financialYear),
+      ]);
 
-    let teamSummary: string | null = null;
-    let companySummary: string | null = null;
+    const rows = buildPerformanceRows(employees as PortalEmployee[], sales, targets);
+    const contextSummary = buildContext(employee, rows, data.question);
+    const role = normalizeRole(profile.role ?? employee.role);
+    const visibleScope = isGlobalRole(role) ? "company" : isManagerialRole(role) ? "team" : "self";
+    const intent = parseIntent(data.question);
 
-    if (role === "manager" || role === "admin" || role === "management") {
-      // Fetch reportees
-      const query = supabase.from("employees").select("id, employee_id, name, manager_id, hq, designation, state, role");
-      
-      // If manager, only their direct reports. If management/admin, all reports.
-      if (role === "manager") {
-        query.eq("manager_id", me.id);
-      }
-      
-      const { data: reports = [] } = await query;
-      const teamIds = (reports as EmpRow[]).map((e) => e.id);
-      
-      if (teamIds.length) {
-        const [{ data: tTargets = [] }, { data: tSales = [] }] = await Promise.all([
-          supabase.from("monthly_targets").select("employee_id, year, month, target_amount").in("employee_id", teamIds).eq("year", year),
-          supabase.from("monthly_sales").select("employee_id, year, month, sales_amount, previous_year_sales").in("employee_id", teamIds).eq("year", year),
-        ]);
+    const answerByIntent: Record<Intent, string> = {
+      self_achievement: answerSelfAchievement(contextSummary),
+      self_ytd_achievement: answerSelfYtdAchievement(contextSummary),
+      sales_needed: answerSalesNeeded(contextSummary),
+      team_ranking: answerTeamRanking(contextSummary),
+      below_80: answerBelow80(contextSummary),
+      top_performers: answerTopPerformers(contextSummary),
+      company_achievement: answerCompanyAchievement(contextSummary),
+      best_state: answerBestBucket(contextSummary.stateRankings, "State"),
+      best_hq: answerBestBucket(contextSummary.hqRankings, "HQ"),
+      best_manager: answerBestBucket(contextSummary.managerRankings, "Manager"),
+      team_summary: answerTeamSummary(contextSummary),
+      help: answerFallback(contextSummary),
+    };
 
-        const rows = (reports as EmpRow[]).map((emp) => {
-          const ytdSales = (tSales as RowSale[])
-            .filter((s) => s.employee_id === emp.id)
-            .reduce((a, b) => a + num(b.sales_amount), 0);
-          const ytdTarget = (tTargets as RowTarget[])
-            .filter((t) => t.employee_id === emp.id)
-            .reduce((a, b) => a + num(b.target_amount), 0);
-          const mSales = (tSales as RowSale[])
-            .filter((s) => s.employee_id === emp.id && s.month === month)
-            .reduce((a, b) => a + num(b.sales_amount), 0);
-          const mTarget = (tTargets as RowTarget[])
-            .filter((t) => t.employee_id === emp.id && t.month === month)
-            .reduce((a, b) => a + num(b.target_amount), 0);
-          const ach = ytdTarget > 0 ? (ytdSales / ytdTarget) * 100 : 0;
-          const mAch = mTarget > 0 ? (mSales / mTarget) * 100 : 0;
-          return { name: emp.name, id: emp.employee_id, hq: emp.hq, state: emp.state, role: emp.role, ytdSales, ytdTarget, ach, mSales, mTarget, mAch };
-        });
-
-        rows.sort((a, b) => b.ach - a.ach);
-        teamSummary = rows
-          .map((r, i) => `${i + 1}. ${r.name} (${r.id}) HQ: ${r.hq || "N/A"}: YTD Sales ₹${r.ytdSales.toFixed(0)} / Target ₹${r.ytdTarget.toFixed(0)} → ${r.ach.toFixed(1)}% · Month Ach: ${r.mAch.toFixed(1)}%`)
-          .join("\n");
-
-        if (role === "admin" || role === "management") {
-          // Calculate state performance
-          const stateSales: Record<string, { sales: number; target: number }> = {};
-          rows.forEach((r) => {
-            if (!r.state) return;
-            if (!stateSales[r.state]) stateSales[r.state] = { sales: 0, target: 0 };
-            stateSales[r.state].sales += r.ytdSales;
-            stateSales[r.state].target += r.ytdTarget;
-          });
-
-          const stateLeaderboard = Object.keys(stateSales)
-            .map((st) => {
-              const ach = stateSales[st].target > 0 ? (stateSales[st].sales / stateSales[st].target) * 100 : 0;
-              return `${st}: ₹${stateSales[st].sales.toFixed(0)} achieved of ₹${stateSales[st].target.toFixed(0)} (${ach.toFixed(1)}%)`;
-            })
-            .join("\n");
-
-          companySummary = `State performance:\n${stateLeaderboard}`;
-        }
-      } else {
-        teamSummary = "No direct reports found.";
-      }
-    }
-
-    const ytdSales = (mySales as RowSale[]).reduce((a, b) => a + num(b.sales_amount), 0);
-    const ytdTarget = (myTargets as RowTarget[]).reduce((a, b) => a + num(b.target_amount), 0);
-    const curSales = (mySales as RowSale[]).filter((s) => s.month === month).reduce((a, b) => a + num(b.sales_amount), 0);
-    const curTarget = (myTargets as RowTarget[]).filter((t) => t.month === month).reduce((a, b) => a + num(b.target_amount), 0);
-    const curPYSales = (mySales as RowSale[]).filter((s) => s.month === month).reduce((a, b) => a + num(b.previous_year_sales), 0);
-    const ach = ytdTarget > 0 ? (ytdSales / ytdTarget) * 100 : 0;
-    const curAch = curTarget > 0 ? (curSales / curTarget) * 100 : 0;
-    const growth = curPYSales > 0 ? ((curSales - curPYSales) / curPYSales) * 100 : 0;
-    const gap = Math.max(0, curTarget - curSales);
-
-    const context_summary = [
-      `User: ${me.name} (Code: ${me.employee_id}) — Role: ${role}`,
-      `Current Date context: Year ${year}, Month ${month}`,
-      `Current Month Sales: ₹${curSales.toFixed(0)} / Target ₹${curTarget.toFixed(0)} → Achievement: ${curAch.toFixed(1)}%`,
-      `Sales needed to hit current month target: ₹${gap.toFixed(0)}`,
-      `Growth vs Previous Year: ${growth.toFixed(1)}%`,
-      `YTD Sales: ₹${ytdSales.toFixed(0)} / Target ₹${ytdTarget.toFixed(0)} → YTD Achievement: ${ach.toFixed(1)}%`,
-      teamSummary ? `\nTeam/Direct Reports (sorted by YTD achievement):\n${teamSummary}` : "",
-      companySummary ? `\nState-wise Performance:\n${companySummary}` : "",
-    ]
-      .filter(Boolean)
-      .join("\n");
-
-    const apiKey = process.env.LOVABLE_API_KEY;
-    if (!apiKey) throw new Error("LOVABLE_API_KEY missing");
-
-    const res = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        model: "google/gemini-3-flash-preview",
-        messages: [
-          {
-            role: "system",
-            content:
-              "You are Adonis Sales Portal AI Assistant, an advanced performance analyst for a pharma organization. Answer the user's question using ONLY the provided data context. Always use Rupees (₹) and percentages. If the user asks about data or individuals not present in the context, politely state you do not have permission or visibility to access that. Keep answers brief (under 8 lines) and use formatting like bold text and bullets where appropriate.",
-          },
-          {
-            role: "user",
-            content: `DATA CONTEXT:\n${context_summary}\n\nQUESTION: ${data.question}`,
-          },
-        ],
-      }),
-    });
-    if (!res.ok) {
-      if (res.status === 429) throw new Error("Rate limit reached. Please retry shortly.");
-      if (res.status === 402) throw new Error("AI credits exhausted. Add credits in workspace billing.");
-      const text = await res.text();
-      throw new Error(`AI error: ${text.slice(0, 200)}`);
-    }
-    const json = (await res.json()) as { choices?: Array<{ message?: { content?: string } }> };
-    const answer = json.choices?.[0]?.message?.content ?? "(no response)";
-    return { answer };
+    return {
+      answer: [
+        answerByIntent[intent],
+        "",
+        `Scope: ${visibleScope}`,
+        `Role: ${role}`,
+        `Financial year: ${financialYear}`,
+      ].join("\n"),
+    };
   });

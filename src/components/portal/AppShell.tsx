@@ -1,8 +1,17 @@
-import { Link, useRouterState, useNavigate } from "@tanstack/react-router";
-import { LayoutDashboard, Users, Sparkles, Database, LogOut, Activity } from "lucide-react";
-import { supabase } from "@/integrations/supabase/client";
-import { Button } from "@/components/ui/button";
 import type { ReactNode } from "react";
+import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
+import {
+  Activity,
+  ArrowRight,
+  Database,
+  LayoutDashboard,
+  LogOut,
+  Sparkles,
+  Shield,
+  Users,
+} from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { supabase } from "@/integrations/supabase/client";
 import { usePortalUser } from "@/hooks/usePortalUser";
 
 export function AppShell({ children }: { children: ReactNode }) {
@@ -12,15 +21,22 @@ export function AppShell({ children }: { children: ReactNode }) {
 
   const nav = [
     { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
-    ...(me?.isManager ? [{ to: "/team", label: "Team", icon: Users }] : []),
+    ...(me?.isManagerial ? [{ to: "/team", label: "Team", icon: Users }] : []),
     { to: "/assistant", label: "Assistant", icon: Sparkles },
-    { to: "/data", label: "Data", icon: Database },
+    ...(me?.canManageUsers ? [{ to: "/data", label: "Admin", icon: Database }] : []),
   ] as const;
 
   async function signOut() {
     await supabase.auth.signOut();
     navigate({ to: "/auth", replace: true });
   }
+
+  const roleLabel = me?.role
+    ? me.role
+        .split("_")
+        .map((part) => part[0]?.toUpperCase() + part.slice(1))
+        .join(" ")
+    : "Member";
 
   return (
     <div className="min-h-screen bg-background flex flex-col pb-20 md:pb-0">
@@ -30,18 +46,22 @@ export function AppShell({ children }: { children: ReactNode }) {
             <Activity className="size-5" />
           </div>
           <div className="flex-1 min-w-0">
-            <p className="text-xs text-muted-foreground leading-none">Sales Performance</p>
+            <p className="text-xs text-muted-foreground leading-none">
+              Pharmaceutical Sales Performance
+            </p>
             <p className="text-sm font-semibold truncate">
-              {me?.employee.name ?? "Welcome"}{" "}
+              {me?.employee.employee_name ?? "Welcome"}{" "}
               <span className="text-muted-foreground font-normal">
-                · {me?.employee.employee_id ?? ""}
+                · {me?.employee.employee_code ?? ""}
               </span>
             </p>
+            <p className="text-[11px] text-muted-foreground">{roleLabel}</p>
           </div>
           <Button variant="ghost" size="icon" onClick={signOut} aria-label="Sign out">
             <LogOut className="size-4" />
           </Button>
         </div>
+
         <nav className="hidden md:flex mx-auto max-w-5xl px-4 pb-2 gap-1">
           {nav.map((item) => {
             const active = pathname === item.to;
@@ -68,7 +88,7 @@ export function AppShell({ children }: { children: ReactNode }) {
       <main className="flex-1 w-full mx-auto max-w-5xl px-4 py-4">{children}</main>
 
       <nav className="md:hidden fixed bottom-0 inset-x-0 z-30 border-t bg-card">
-        <div className="grid grid-cols-4">
+        <div className={`grid ${nav.length >= 4 ? "grid-cols-4" : "grid-cols-3"}`}>
           {nav.map((item) => {
             const active = pathname === item.to;
             const Icon = item.icon;

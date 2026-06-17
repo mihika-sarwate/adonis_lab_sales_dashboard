@@ -1,71 +1,93 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  Ban,
+  CheckCircle,
+  FileText,
+  Key,
+  Shield,
+  Upload,
+  UserCheck,
+  Users,
+  History,
+  RefreshCw,
+} from "lucide-react";
+import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 import { usePortalUser } from "@/hooks/usePortalUser";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { toast } from "sonner";
-import { formatINR } from "@/components/portal/KpiCard";
-import { Upload, Users, Shield, FileText, CheckCircle, AlertTriangle, Key, Ban, UserCheck } from "lucide-react";
+import {
+  currentFinancialYear,
+  monthNumberFromLabel,
+  normalizeRole,
+  type PortalRole,
+} from "@/lib/portal";
 
 export const Route = createFileRoute("/_authenticated/data")({
-  head: () => ({ meta: [{ title: "Admin Portal · Sales Performance" }] }),
+  head: () => ({ meta: [{ title: "Admin Portal · Pharmaceutical Sales Portal" }] }),
   component: AdminPortalPage,
 });
 
-const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-const MONTH_MAP: Record<string, number> = {
-  jan: 1, january: 1, feb: 2, february: 2, mar: 3, march: 3,
-  apr: 4, april: 4, may: 5, jun: 6, june: 6, jul: 7, july: 7,
-  aug: 8, august: 8, sep: 9, september: 9, oct: 10, october: 10,
-  nov: 11, november: 11, dec: 12, december: 12
-};
+type UploadType = "employees" | "sales" | "targets";
 
-function parseMonth(val: string): number {
-  const clean = val.trim().toLowerCase();
-  if (!isNaN(Number(clean))) return Number(clean);
-  const matched = MONTH_MAP[clean] || MONTH_MAP[clean.substring(0, 3)];
-  return matched || new Date().getMonth() + 1;
-}
+type ParsedRow = Record<string, string>;
+type ValidationIssue = { row: number; message: string };
 
-function parseCSV(text: string) {
-  const lines = text.split(/\r?\n/).filter(line => line.trim().length > 0);
-  if (lines.length === 0) return [];
-  
-  const parseLine = (line: string) => {
-    const result = [];
-    let current = '';
+function parseCsv(text: string): ParsedRow[] {
+  const lines = text.split(/\r?\n/).filter((line) => line.trim().length > 0);
+  if (!lines.length) return [];
+
+  const splitLine = (line: string) => {
+    const cells: string[] = [];
+    let current = "";
     let inQuotes = false;
-    for (let i = 0; i < line.length; i++) {
-      const char = line[i];
+    for (let index = 0; index < line.length; index += 1) {
+      const char = line[index];
       if (char === '"') {
         inQuotes = !inQuotes;
-      } else if (char === ',' && !inQuotes) {
-        result.push(current.trim());
-        current = '';
+      } else if (char === "," && !inQuotes) {
+        cells.push(current.trim());
+        current = "";
       } else {
         current += char;
       }
     }
-    result.push(current.trim());
-    return result;
+    cells.push(current.trim());
+    return cells;
   };
 
-  const headers = parseLine(lines[0]).map(h => h.toLowerCase().replace(/[^a-z0-9]/g, ''));
-  const rows = [];
-  for (let i = 1; i < lines.length; i++) {
-    const values = parseLine(lines[i]);
-    const row: Record<string, string> = {};
+  const headers = splitLine(lines[0]).map((header) =>
+    header.toLowerCase().replace(/[^a-z0-9]/g, ""),
+  );
+  return lines.slice(1).map((line) => {
+    const values = splitLine(line);
+    const row: ParsedRow = {};
     headers.forEach((header, index) => {
-      row[header] = values[index] || '';
+      row[header] = values[index] ?? "";
     });
-    rows.push(row);
-  }
-  return rows;
+    return row;
+  });
+}
+
+function normalizeMonth(value: string) {
+  const clean = value.trim().toLowerCase();
+  const short = clean.slice(0, 3);
+  return Number.isFinite(Number(clean)) ? Number(clean) : monthNumberFromLabel(short);
+}
+
+function normalizeEmployeeCode(value: string) {
+  return value.trim().toUpperCase();
 }
 
 function AdminPortalPage() {
@@ -73,171 +95,284 @@ function AdminPortalPage() {
   const qc = useQueryClient();
   const [selectedTab, setSelectedTab] = useState("upload");
 
-  // Fetch all employees for management
-  const { data: allEmployees = [], isLoading: empsLoading } = useQuery({
-    enabled: !!me?.isAdmin,
+  const canAccess = !!me?.canManageUsers;
+
+  const { data: employees = [], isLoading: employeesLoading } = useQuery({
+    enabled: canAccess,
     queryKey: ["admin-employees"],
     queryFn: async () => {
       const { data, error } = await supabase
         .from("employees")
-        .select("id, employee_id, name, hq, designation, state, status, role, manager_id");
+        .select(
+          "employee_code, employee_name, designation, role, manager_code, hq, state, active, auth_user_id",
+        )
+        .order("employee_name");
       if (error) throw error;
-      return data || [];
-    }
+      return data ?? [];
+    },
+  });
+
+  const { data: profiles = [] } = useQuery({
+    enabled: canAccess,
+    queryKey: ["admin-profiles"],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("user_profiles")
+        .select("auth_user_id, employee_code, role");
+      if (error) throw error;
+      return data ?? [];
+    },
+  });
+
+  const { data: importHistory = [] } = useQuery({
+    enabled: canAccess,
+    queryKey: ["admin-imports"],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("imports_log")
+        .select("*")
+        .order("created_at", { ascending: false })
+        .limit(50);
+      if (error) throw error;
+      return data ?? [];
+    },
   });
 
   const updateEmployee = useMutation({
-    mutationFn: async ({ id, status, role }: { id: string; status?: string; role?: string }) => {
-      const updates: Record<string, string> = {};
-      if (status) updates.status = status;
-      if (role) updates.role = role;
+    mutationFn: async (payload: {
+      employee_code: string;
+      role?: PortalRole;
+      active?: boolean;
+      manager_code?: string | null;
+    }) => {
+      const { employee_code, role, active, manager_code } = payload;
+      const updates: Record<string, unknown> = {};
+      if (role) updates.role = normalizeRole(role);
+      if (typeof active === "boolean") updates.active = active;
+      if (manager_code !== undefined)
+        updates.manager_code = manager_code ? manager_code.toUpperCase() : null;
       const { error } = await supabase
         .from("employees")
         .update(updates)
-        .eq("id", id);
+        .eq("employee_code", employee_code);
       if (error) throw error;
-    },
-    onSuccess: () => {
-      toast.success("Employee updated successfully.");
-      qc.invalidateQueries({ queryKey: ["admin-employees"] });
-    },
-    onError: (err) => toast.error(err instanceof Error ? err.message : "Update failed")
-  });
 
-  const simulatePasswordReset = useMutation({
-    mutationFn: async (employeeId: string) => {
-      // Standard supabase authentication reset links can be sent if they have an email,
-      // but in this portal we use employee code emails e.g. emp001@portal.app.
-      // So we can send a reset email or simulate it for demo.
-      const email = `${employeeId.trim().toLowerCase()}@portal.app`;
-      const { error } = await supabase.auth.resetPasswordForEmail(email, {
-        redirectTo: `${window.location.origin}/auth`,
-      });
-      // In local development or if SMTP is not set up, show success of reset.
-      if (error) {
-        throw error;
+      if (role) {
+        await supabase
+          .from("user_profiles")
+          .update({ role: normalizeRole(role) })
+          .eq("employee_code", employee_code);
       }
     },
-    onSuccess: (_, empId) => {
-      toast.success(`Password reset email sent to ${empId.trim().toLowerCase()}@portal.app`);
+    onSuccess: () => {
+      toast.success("Employee updated");
+      qc.invalidateQueries();
     },
-    onError: (err) => {
-      // Fallback message for demo environments
-      toast.info("Triggered simulated password reset for employee. Link sent successfully!");
-    }
+    onError: (error) => toast.error(error instanceof Error ? error.message : "Update failed"),
+  });
+
+  const resetPassword = useMutation({
+    mutationFn: async (employee_code: string) => {
+      const email = `${employee_code.trim().toLowerCase()}@portal.app`;
+      const { error } = await supabase.auth.resetPasswordForEmail(email, {
+        redirectTo: `${window.location.origin}/reset-password`,
+      });
+      if (error) throw error;
+    },
+    onSuccess: () => toast.success("Password reset link sent"),
+    onError: (error) => toast.error(error instanceof Error ? error.message : "Reset failed"),
   });
 
   if (meLoading) return <div className="kpi-card p-6 animate-pulse h-40" />;
 
-  if (!me?.isAdmin) {
+  if (!canAccess) {
     return (
       <div className="kpi-card p-6 text-center text-sm text-muted-foreground max-w-md mx-auto mt-10">
         <Shield className="size-12 mx-auto text-destructive mb-3" />
         <h2 className="text-base font-semibold text-foreground mb-1">Access Restricted</h2>
-        Only Admin accounts can access the data management portal.
+        Only head office and admin accounts can access the management portal.
       </div>
     );
   }
 
   return (
     <div className="space-y-5">
-      <section className="flex items-center justify-between">
+      <section className="flex items-center justify-between gap-3">
         <div>
           <h1 className="text-xl font-semibold tracking-tight">Admin Portal</h1>
-          <p className="text-sm text-muted-foreground">Manage organization data, uploads, and users</p>
+          <p className="text-sm text-muted-foreground">
+            Employee master, imports, hierarchy, and user controls
+          </p>
         </div>
       </section>
 
       <Tabs value={selectedTab} onValueChange={setSelectedTab} className="w-full">
-        <TabsList className="grid grid-cols-2 w-full max-w-md">
+        <TabsList className="grid grid-cols-3 w-full max-w-xl">
           <TabsTrigger value="upload" className="flex items-center gap-1.5">
-            <Upload className="size-4" /> Data Upload
+            <Upload className="size-4" /> Uploads
           </TabsTrigger>
           <TabsTrigger value="users" className="flex items-center gap-1.5">
-            <Users className="size-4" /> User Management
+            <Users className="size-4" /> Users
+          </TabsTrigger>
+          <TabsTrigger value="history" className="flex items-center gap-1.5">
+            <History className="size-4" /> History
           </TabsTrigger>
         </TabsList>
 
         <TabsContent value="upload" className="mt-4">
-          <DataUploadSection />
+          <CsvUploadSection />
         </TabsContent>
 
         <TabsContent value="users" className="mt-4">
           <section className="kpi-card p-4 space-y-3">
-            <div className="flex items-center justify-between">
-              <h2 className="text-sm font-semibold">Field Force Employees ({allEmployees.length})</h2>
+            <div className="flex items-center justify-between gap-3">
+              <h2 className="text-sm font-semibold">Employee Master ({employees.length})</h2>
+              <Button size="sm" variant="ghost" onClick={() => qc.invalidateQueries()}>
+                <RefreshCw className="size-4" />
+                Refresh
+              </Button>
             </div>
 
-            {empsLoading ? (
+            {employeesLoading ? (
               <div className="animate-pulse space-y-2">
                 <div className="h-10 bg-secondary rounded" />
                 <div className="h-10 bg-secondary rounded" />
               </div>
             ) : (
-              <div className="divide-y max-h-[60vh] overflow-y-auto pr-1">
-                {allEmployees.map((emp) => (
-                  <div key={emp.id} className="py-3 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
-                    <div>
-                      <div className="flex items-center gap-2">
-                        <span className="text-sm font-medium">{emp.name}</span>
-                        <span className="text-xs px-2 py-0.5 rounded bg-secondary text-muted-foreground">
-                          {emp.employee_id}
-                        </span>
+              <div className="divide-y max-h-[70vh] overflow-y-auto pr-1">
+                {employees.map((employee) => {
+                  const profile = profiles.find(
+                    (item) => item.employee_code === employee.employee_code,
+                  );
+                  return (
+                    <div
+                      key={employee.employee_code}
+                      className="py-3 grid gap-3 md:grid-cols-[1.5fr_0.8fr_0.8fr_auto_auto] md:items-center"
+                    >
+                      <div>
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="text-sm font-medium">{employee.employee_name}</span>
+                          <span className="text-xs px-2 py-0.5 rounded bg-secondary text-muted-foreground">
+                            {employee.employee_code}
+                          </span>
+                          {!employee.active && (
+                            <span className="text-xs px-2 py-0.5 rounded bg-destructive/10 text-destructive">
+                              Inactive
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-xs text-muted-foreground">
+                          {employee.designation || "No designation"} · {employee.hq || "No HQ"} ·{" "}
+                          {employee.state || "No state"}
+                        </p>
                       </div>
-                      <p className="text-xs text-muted-foreground">
-                        {emp.designation || "No Designation"} · {emp.hq || "No HQ"} · {emp.state || "No State"}
-                      </p>
-                    </div>
 
-                    <div className="flex items-center gap-2 mt-1 sm:mt-0">
                       <Select
-                        value={emp.role || "be_mr"}
-                        onValueChange={(r) => updateEmployee.mutate({ id: emp.id, role: r })}
+                        value={normalizeRole(profile?.role ?? employee.role)}
+                        onValueChange={(role) =>
+                          updateEmployee.mutate({
+                            employee_code: employee.employee_code,
+                            role: role as PortalRole,
+                          })
+                        }
                       >
-                        <SelectTrigger className="w-32 h-8 text-xs">
+                        <SelectTrigger className="h-9 text-xs">
                           <SelectValue />
                         </SelectTrigger>
                         <SelectContent>
-                          <SelectItem value="be_mr">BE / MR</SelectItem>
+                          <SelectItem value="representative">Representative</SelectItem>
                           <SelectItem value="manager">Manager</SelectItem>
-                          <SelectItem value="management">Management</SelectItem>
+                          <SelectItem value="rsm">RSM</SelectItem>
+                          <SelectItem value="zsm">ZSM</SelectItem>
+                          <SelectItem value="head_office">Head Office</SelectItem>
                           <SelectItem value="admin">Admin</SelectItem>
                         </SelectContent>
                       </Select>
 
+                      <Input
+                        key={`${employee.employee_code}-${employee.manager_code ?? ""}`}
+                        className="h-9 text-xs"
+                        defaultValue={employee.manager_code ?? ""}
+                        placeholder="Manager code"
+                        onBlur={(event) =>
+                          updateEmployee.mutate({
+                            employee_code: employee.employee_code,
+                            manager_code: event.target.value || null,
+                          })
+                        }
+                      />
+
                       <Button
                         size="icon"
                         variant="ghost"
-                        className="h-8 w-8 text-muted-foreground hover:text-foreground"
-                        title={emp.status === "inactive" ? "Activate Employee" : "Deactivate Employee"}
+                        className="h-9 w-9"
+                        title={employee.active ? "Deactivate employee" : "Activate employee"}
                         onClick={() =>
                           updateEmployee.mutate({
-                            id: emp.id,
-                            status: emp.status === "inactive" ? "active" : "inactive",
+                            employee_code: employee.employee_code,
+                            active: !employee.active,
                           })
                         }
                       >
-                        {emp.status === "inactive" ? (
-                          <Ban className="size-4 text-destructive" />
-                        ) : (
+                        {employee.active ? (
                           <UserCheck className="size-4 text-success" />
+                        ) : (
+                          <Ban className="size-4 text-destructive" />
                         )}
                       </Button>
 
                       <Button
                         size="icon"
                         variant="ghost"
-                        className="h-8 w-8 text-muted-foreground hover:text-foreground"
-                        title="Reset Password Link"
-                        onClick={() => simulatePasswordReset.mutate(emp.employee_id)}
+                        className="h-9 w-9"
+                        title="Reset password"
+                        onClick={() => resetPassword.mutate(employee.employee_code)}
                       >
                         <Key className="size-4" />
                       </Button>
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
+          </section>
+        </TabsContent>
+
+        <TabsContent value="history" className="mt-4">
+          <section className="kpi-card p-4 space-y-3">
+            <div className="flex items-center justify-between">
+              <h2 className="text-sm font-semibold">Import History</h2>
+              <span className="text-xs text-muted-foreground">
+                Latest {importHistory.length} runs
+              </span>
+            </div>
+
+            <div className="divide-y">
+              {importHistory.map((item) => (
+                <div
+                  key={item.id}
+                  className="py-3 grid gap-2 md:grid-cols-[1.2fr_1fr_1fr_auto] md:items-center"
+                >
+                  <div>
+                    <p className="font-medium capitalize">{item.import_type}</p>
+                    <p className="text-xs text-muted-foreground">
+                      {item.source_file_name || "Manual paste"}
+                    </p>
+                  </div>
+                  <div className="text-xs text-muted-foreground">
+                    <p>Status: {item.status}</p>
+                    <p>Rows: {item.total_rows}</p>
+                  </div>
+                  <div className="text-xs text-muted-foreground">
+                    <p>Inserted: {item.inserted_rows}</p>
+                    <p>Updated: {item.updated_rows}</p>
+                  </div>
+                  <div className="text-xs text-right text-muted-foreground">
+                    {new Date(item.created_at).toLocaleString()}
+                  </div>
+                </div>
+              ))}
+            </div>
           </section>
         </TabsContent>
       </Tabs>
@@ -245,123 +380,224 @@ function AdminPortalPage() {
   );
 }
 
-function DataUploadSection() {
-  const [activeUpload, setActiveUpload] = useState<"employee" | "target" | "sales" | null>(null);
-  const [csvText, setCsvText] = useState("");
-  const [loading, setLoading] = useState(false);
+function CsvUploadSection() {
   const qc = useQueryClient();
+  const [activeUpload, setActiveUpload] = useState<UploadType | null>(null);
+  const [csvText, setCsvText] = useState("");
+  const [fileName, setFileName] = useState<string | null>(null);
+  const [previewRows, setPreviewRows] = useState<ParsedRow[]>([]);
+  const [issues, setIssues] = useState<ValidationIssue[]>([]);
+  const [loading, setLoading] = useState(false);
+  const currentFY = currentFinancialYear();
 
-  const handleUpload = async () => {
-    if (!csvText.trim() || !activeUpload) return;
-    setLoading(true);
-    try {
-      const rows = parseCSV(csvText);
-      if (rows.length === 0) throw new Error("No data rows found in CSV");
+  const preview = () => {
+    if (!activeUpload) return;
+    const rows = parseCsv(csvText);
+    const nextIssues: ValidationIssue[] = [];
+    const seen = new Set<string>();
 
-      if (activeUpload === "employee") {
-        // Upload Employee Master
-        const upsertData = rows.map(r => ({
-          employee_id: (r.employeeid || r.code || r.empid || "").trim().toUpperCase(),
-          name: (r.employeename || r.name || "").trim(),
-          hq: (r.hq || "").trim(),
-          designation: (r.designation || "").trim(),
-          state: (r.state || "").trim(),
-          status: (r.status || "active").trim().toLowerCase(),
-          role: (r.role || "be_mr").trim().toLowerCase()
-        })).filter(e => e.employee_id && e.name);
-
-        if (upsertData.length === 0) throw new Error("Invalid Employee CSV structure");
-
-        // Primary upsert
-        const { error: upsertErr } = await supabase
-          .from("employees")
-          .upsert(upsertData, { onConflict: "employee_id" });
-        if (upsertErr) throw upsertErr;
-
-        // Resolve ManagerIDs if present
-        const { data: allEmps } = await supabase.from("employees").select("id, employee_id");
-        if (allEmps) {
-          const empMap = new Map(allEmps.map(e => [e.employee_id.trim().toLowerCase(), e.id]));
-          const updates = rows.map(r => {
-            const empCode = (r.employeeid || r.code || r.empid || "").trim().toLowerCase();
-            const mgrCode = (r.managerid || "").trim().toLowerCase();
-            const empUuid = empMap.get(empCode);
-            const mgrUuid = empMap.get(mgrCode);
-            if (empUuid && mgrUuid) {
-              return {
-                id: empUuid,
-                employee_id: (r.employeeid || r.code || r.empid || "").trim().toUpperCase(),
-                name: (r.employeename || r.name || "").trim(),
-                manager_id: mgrUuid
-              };
-            }
-            return null;
-          }).filter(Boolean);
-
-          if (updates.length > 0) {
-            await supabase.from("employees").upsert(updates, { onConflict: "employee_id" });
-          }
-        }
-
-        toast.success(`Successfully uploaded ${upsertData.length} employees`);
-      } else if (activeUpload === "target") {
-        // Upload Targets
-        const { data: allEmps } = await supabase.from("employees").select("id, employee_id");
-        const empMap = new Map(allEmps?.map(e => [e.employee_id.trim().toLowerCase(), e.id]) || []);
-
-        const targetUpserts = rows.map(r => {
-          const code = (r.employeeid || r.code || "").trim().toLowerCase();
-          const empUuid = empMap.get(code);
-          if (!empUuid) return null;
-          return {
-            employee_id: empUuid,
-            month: parseMonth(r.month),
-            year: Number(r.year) || new Date().getFullYear(),
-            target_amount: Number(r.targetamount || r.amount) || 0
-          };
-        }).filter(Boolean);
-
-        if (targetUpserts.length === 0) throw new Error("Could not map any targets to existing employees");
-
-        const { error } = await supabase
-          .from("monthly_targets")
-          .upsert(targetUpserts, { onConflict: "employee_id,year,month" });
-        if (error) throw error;
-
-        toast.success(`Uploaded ${targetUpserts.length} targets`);
-      } else if (activeUpload === "sales") {
-        // Upload Sales
-        const { data: allEmps } = await supabase.from("employees").select("id, employee_id");
-        const empMap = new Map(allEmps?.map(e => [e.employee_id.trim().toLowerCase(), e.id]) || []);
-
-        const salesUpserts = rows.map(r => {
-          const code = (r.employeeid || r.code || "").trim().toLowerCase();
-          const empUuid = empMap.get(code);
-          if (!empUuid) return null;
-          return {
-            employee_id: empUuid,
-            month: parseMonth(r.month),
-            year: Number(r.year) || new Date().getFullYear(),
-            sales_amount: Number(r.salesamount || r.amount) || 0,
-            previous_year_sales: Number(r.previousyearsales || r.pysales) || 0
-          };
-        }).filter(Boolean);
-
-        if (salesUpserts.length === 0) throw new Error("Could not map any sales records to existing employees");
-
-        const { error } = await supabase
-          .from("monthly_sales")
-          .upsert(salesUpserts, { onConflict: "employee_id,year,month" });
-        if (error) throw error;
-
-        toast.success(`Uploaded ${salesUpserts.length} sales records`);
+    rows.forEach((row, index) => {
+      const employeeCode = normalizeEmployeeCode(
+        row.employeecode || row.code || row.empid || row.employeeid || "",
+      );
+      if (!employeeCode) {
+        nextIssues.push({ row: index + 2, message: "Missing employee code" });
       }
 
+      const dedupeKey =
+        activeUpload === "employees"
+          ? employeeCode
+          : `${employeeCode}:${row.financialyear || currentFY}:${normalizeMonth(row.month || "")}`;
+
+      if (seen.has(dedupeKey)) {
+        nextIssues.push({ row: index + 2, message: "Duplicate row detected in the file" });
+      }
+      seen.add(dedupeKey);
+
+      if (activeUpload === "employees" && !(row.employeename || row.name || "").trim()) {
+        nextIssues.push({ row: index + 2, message: "Employee name is required" });
+      }
+      if (activeUpload !== "employees") {
+        if (!row.month) nextIssues.push({ row: index + 2, message: "Month is required" });
+        if (!row.amount && !row.targetamount && !row.salesamount)
+          nextIssues.push({ row: index + 2, message: "Amount is required" });
+      }
+    });
+
+    setPreviewRows(rows);
+    setIssues(nextIssues);
+  };
+
+  const upload = async () => {
+    if (!activeUpload || !previewRows.length) return;
+    setLoading(true);
+    const previewData = previewRows.slice(0, 25);
+    let logId: string | null = null;
+
+    try {
+      const { data: userData } = await supabase.auth.getUser();
+      const { data: log, error: logError } = await supabase
+        .from("imports_log")
+        .insert({
+          import_type: activeUpload,
+          source_file_name: fileName,
+          uploaded_by: userData.user?.id ?? null,
+          status: "processing",
+          total_rows: previewRows.length,
+          duplicate_rows: issues.length,
+          preview: previewData as never,
+          errors: issues as never,
+        })
+        .select("id")
+        .single();
+      if (logError) throw logError;
+      logId = log.id;
+
+      if (activeUpload === "employees") {
+        const { data: existingEmployees, error: employeesError } = await supabase
+          .from("employees")
+          .select("employee_code");
+        if (employeesError) throw employeesError;
+        const knownCodes = new Set((existingEmployees ?? []).map((item) => item.employee_code));
+        const baseRows = previewRows
+          .map((row) => ({
+            employee_code: normalizeEmployeeCode(
+              row.employeecode || row.code || row.empid || row.employeeid || "",
+            ),
+            employee_name: (row.employeename || row.name || "").trim(),
+            designation: (row.designation || "").trim() || null,
+            role: normalizeRole((row.role || "representative").trim()) as PortalRole,
+            hq: (row.hq || "").trim() || null,
+            state: (row.state || "").trim() || null,
+            active: (row.status || "active").trim().toLowerCase() !== "inactive",
+          }))
+          .filter((row) => row.employee_code && row.employee_name);
+
+        const { error } = await supabase
+          .from("employees")
+          .upsert(baseRows, { onConflict: "employee_code" });
+        if (error) throw error;
+
+        const managerRows = previewRows
+          .map((row) => {
+            const employee_code = normalizeEmployeeCode(
+              row.employeecode || row.code || row.empid || row.employeeid || "",
+            );
+            const manager_code = normalizeEmployeeCode(row.managercode || row.managerid || "");
+            if (!employee_code || !manager_code) return null;
+            return { employee_code, manager_code };
+          })
+          .filter((row): row is { employee_code: string; manager_code: string } => !!row);
+
+        const invalidManagers = managerRows.filter(
+          (row) =>
+            !baseRows.some((item) => item.employee_code === row.manager_code) &&
+            !knownCodes.has(row.manager_code),
+        );
+        if (invalidManagers.length) {
+          throw new Error(
+            `Unknown manager code(s): ${[...new Set(invalidManagers.map((row) => row.manager_code))].join(", ")}`,
+          );
+        }
+
+        if (managerRows.length) {
+          const { error: managerError } = await supabase.from("employees").upsert(
+            managerRows.map((row) => ({
+              employee_code: row.employee_code,
+              manager_code: row.manager_code,
+            })),
+            { onConflict: "employee_code" },
+          );
+          if (managerError) throw managerError;
+        }
+      }
+
+      if (activeUpload === "sales" || activeUpload === "targets") {
+        const { data: knownEmployees, error: employeesError } = await supabase
+          .from("employees")
+          .select("employee_code");
+        if (employeesError) throw employeesError;
+        const validCodes = new Set((knownEmployees ?? []).map((item) => item.employee_code));
+
+        if (activeUpload === "sales") {
+          const rows = previewRows
+            .map((row) => {
+              const employee_code = normalizeEmployeeCode(
+                row.employeecode || row.code || row.empid || row.employeeid || "",
+              );
+              const month = normalizeMonth(row.month || "");
+              const financial_year = row.financialyear || currentFY;
+              if (!validCodes.has(employee_code)) return null;
+              return {
+                employee_code,
+                month,
+                financial_year,
+                sales_amount: Number(row.salesamount || row.amount || 0),
+                previous_year_sales: Number(row.previousyearsales || row.pysales || 0),
+              };
+            })
+            .filter(Boolean);
+
+          const { error } = await supabase
+            .from("monthly_sales")
+            .upsert(rows as never, { onConflict: "employee_code,financial_year,month" });
+          if (error) throw error;
+        } else {
+          const rows = previewRows
+            .map((row) => {
+              const employee_code = normalizeEmployeeCode(
+                row.employeecode || row.code || row.empid || row.employeeid || "",
+              );
+              const month = normalizeMonth(row.month || "");
+              const financial_year = row.financialyear || currentFY;
+              if (!validCodes.has(employee_code)) return null;
+              return {
+                employee_code,
+                month,
+                financial_year,
+                target_amount: Number(row.targetamount || row.amount || 0),
+              };
+            })
+            .filter(Boolean);
+
+          const { error } = await supabase
+            .from("monthly_targets")
+            .upsert(rows as never, { onConflict: "employee_code,financial_year,month" });
+          if (error) throw error;
+        }
+      }
+
+      if (logId) {
+        await supabase
+          .from("imports_log")
+          .update({
+            status: issues.length ? "completed_with_errors" : "completed",
+            inserted_rows: Math.max(0, previewRows.length - issues.length),
+            error_rows: issues.length,
+          })
+          .eq("id", logId);
+      }
+
+      toast.success("Import completed");
       setCsvText("");
+      setPreviewRows([]);
+      setIssues([]);
       setActiveUpload(null);
+      setFileName(null);
       qc.invalidateQueries();
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : "CSV parse or upload failed");
+    } catch (error) {
+      if (logId) {
+        await supabase
+          .from("imports_log")
+          .update({
+            status: "failed",
+            errors: [
+              { message: error instanceof Error ? error.message : "Import failed" },
+            ] as never,
+          })
+          .eq("id", logId);
+      }
+      toast.error(error instanceof Error ? error.message : "CSV import failed");
     } finally {
       setLoading(false);
     }
@@ -371,10 +607,18 @@ function DataUploadSection() {
     <div className="space-y-4">
       <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
         <button
-          onClick={() => { setActiveUpload("employee"); setCsvText(""); }}
+          onClick={() => {
+            setActiveUpload("employees");
+            setCsvText("");
+            setPreviewRows([]);
+            setIssues([]);
+            setFileName(null);
+          }}
           className={[
             "kpi-card p-4 text-left flex items-start gap-3 border transition-all",
-            activeUpload === "employee" ? "border-primary bg-primary/5 shadow-inner" : "border-border hover:bg-accent/5"
+            activeUpload === "employees"
+              ? "border-primary bg-primary/5 shadow-inner"
+              : "border-border hover:bg-accent/5",
           ].join(" ")}
         >
           <div className="size-9 rounded-xl bg-primary/10 grid place-items-center text-primary mt-0.5">
@@ -382,15 +626,25 @@ function DataUploadSection() {
           </div>
           <div>
             <h3 className="text-sm font-semibold">Employee Master</h3>
-            <p className="text-xs text-muted-foreground">Upload HQ, Designation, Manager, State & Role</p>
+            <p className="text-xs text-muted-foreground">
+              Upload employee code, name, manager, state, HQ, and role
+            </p>
           </div>
         </button>
 
         <button
-          onClick={() => { setActiveUpload("target"); setCsvText(""); }}
+          onClick={() => {
+            setActiveUpload("targets");
+            setCsvText("");
+            setPreviewRows([]);
+            setIssues([]);
+            setFileName(null);
+          }}
           className={[
             "kpi-card p-4 text-left flex items-start gap-3 border transition-all",
-            activeUpload === "target" ? "border-primary bg-primary/5 shadow-inner" : "border-border hover:bg-accent/5"
+            activeUpload === "targets"
+              ? "border-primary bg-primary/5 shadow-inner"
+              : "border-border hover:bg-accent/5",
           ].join(" ")}
         >
           <div className="size-9 rounded-xl bg-amber-500/10 grid place-items-center text-amber-500 mt-0.5">
@@ -398,15 +652,25 @@ function DataUploadSection() {
           </div>
           <div>
             <h3 className="text-sm font-semibold">Monthly Targets</h3>
-            <p className="text-xs text-muted-foreground">Upload targets per Employee, Year & Month</p>
+            <p className="text-xs text-muted-foreground">
+              Upload target amount by employee, month, and financial year
+            </p>
           </div>
         </button>
 
         <button
-          onClick={() => { setActiveUpload("sales"); setCsvText(""); }}
+          onClick={() => {
+            setActiveUpload("sales");
+            setCsvText("");
+            setPreviewRows([]);
+            setIssues([]);
+            setFileName(null);
+          }}
           className={[
             "kpi-card p-4 text-left flex items-start gap-3 border transition-all",
-            activeUpload === "sales" ? "border-primary bg-primary/5 shadow-inner" : "border-border hover:bg-accent/5"
+            activeUpload === "sales"
+              ? "border-primary bg-primary/5 shadow-inner"
+              : "border-border hover:bg-accent/5",
           ].join(" ")}
         >
           <div className="size-9 rounded-xl bg-emerald-500/10 grid place-items-center text-emerald-500 mt-0.5">
@@ -414,7 +678,9 @@ function DataUploadSection() {
           </div>
           <div>
             <h3 className="text-sm font-semibold">Monthly Sales</h3>
-            <p className="text-xs text-muted-foreground">Upload actual sales and previous year figures</p>
+            <p className="text-xs text-muted-foreground">
+              Upload sales amount and previous year sales
+            </p>
           </div>
         </button>
       </div>
@@ -424,32 +690,131 @@ function DataUploadSection() {
           <div>
             <h3 className="text-sm font-semibold capitalize">Upload {activeUpload} Data</h3>
             <p className="text-xs text-muted-foreground mt-0.5">
-              {activeUpload === "employee" && "Required Headers: EmployeeID, EmployeeName, HQ, Designation, ManagerID, State, Status, Role"}
-              {activeUpload === "target" && "Required Headers: EmployeeID, Month, TargetAmount, Year"}
-              {activeUpload === "sales" && "Required Headers: EmployeeID, Month, SalesAmount, PreviousYearSales, Year"}
+              {activeUpload === "employees" &&
+                "Required headers: EmployeeCode, EmployeeName, Designation, ManagerCode, HQ, State, Role, Status"}
+              {activeUpload === "targets" &&
+                "Required headers: EmployeeCode, Month, TargetAmount, FinancialYear"}
+              {activeUpload === "sales" &&
+                "Required headers: EmployeeCode, Month, SalesAmount, PreviousYearSales, FinancialYear"}
             </p>
           </div>
 
+          <div className="grid gap-3 md:grid-cols-2">
+            <div className="space-y-1.5">
+              <Label htmlFor="csv-file">CSV File</Label>
+              <Input
+                id="csv-file"
+                type="file"
+                accept=".csv,text/csv"
+                onChange={async (event) => {
+                  const file = event.target.files?.[0];
+                  if (!file) return;
+                  setFileName(file.name);
+                  setCsvText(await file.text());
+                }}
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="csv-input">Or paste CSV content</Label>
+              <Input
+                id="csv-input"
+                value={fileName ?? ""}
+                onChange={() => undefined}
+                placeholder="Selected file will appear here"
+                disabled
+              />
+            </div>
+          </div>
+
           <div className="space-y-1.5">
-            <Label htmlFor="csv-input">Paste CSV Content</Label>
+            <Label htmlFor="csv-paste">CSV Text</Label>
             <textarea
-              id="csv-input"
+              id="csv-paste"
               rows={8}
               value={csvText}
-              onChange={(e) => setCsvText(e.target.value)}
-              placeholder="EmployeeID,EmployeeName,HQ,Designation,ManagerID,State,Status,Role&#10;EMP001,John Doe,Mumbai HQ,BE / MR,MGR001,Maharashtra,active,be_mr"
+              onChange={(event) => setCsvText(event.target.value)}
+              placeholder={
+                activeUpload === "employees"
+                  ? "EmployeeCode,EmployeeName,Designation,ManagerCode,HQ,State,Role,Status"
+                  : activeUpload === "sales"
+                    ? "EmployeeCode,Month,SalesAmount,PreviousYearSales,FinancialYear"
+                    : "EmployeeCode,Month,TargetAmount,FinancialYear"
+              }
               className="w-full rounded-md border border-input bg-background px-3 py-2 text-xs ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
             />
           </div>
 
-          <div className="flex gap-2">
-            <Button size="sm" onClick={handleUpload} disabled={loading || !csvText.trim()}>
+          <div className="flex gap-2 flex-wrap">
+            <Button size="sm" variant="secondary" onClick={preview} disabled={!csvText.trim()}>
+              Preview
+            </Button>
+            <Button size="sm" onClick={upload} disabled={loading || !previewRows.length}>
               {loading ? "Processing..." : "Process Upload"}
             </Button>
-            <Button size="sm" variant="ghost" onClick={() => setActiveUpload(null)}>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => {
+                setActiveUpload(null);
+                setCsvText("");
+                setPreviewRows([]);
+                setIssues([]);
+                setFileName(null);
+              }}
+            >
               Cancel
             </Button>
           </div>
+
+          {(previewRows.length > 0 || issues.length > 0) && (
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <h4 className="text-sm font-semibold">Preview</h4>
+                <span className="text-xs text-muted-foreground">
+                  {previewRows.length} rows, {issues.length} validation issue(s)
+                </span>
+              </div>
+
+              {issues.length > 0 && (
+                <div className="rounded-xl border border-destructive/20 bg-destructive/5 p-3 text-xs text-destructive space-y-1">
+                  {issues.slice(0, 8).map((issue) => (
+                    <p key={`${issue.row}-${issue.message}`}>
+                      Row {issue.row}: {issue.message}
+                    </p>
+                  ))}
+                </div>
+              )}
+
+              <div className="overflow-x-auto border rounded-lg">
+                <table className="w-full text-xs">
+                  <thead className="bg-secondary text-muted-foreground font-semibold border-b">
+                    <tr>
+                      {Object.keys(previewRows[0] ?? {})
+                        .slice(0, 6)
+                        .map((header) => (
+                          <th key={header} className="p-3 text-left">
+                            {header}
+                          </th>
+                        ))}
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y">
+                    {previewRows.slice(0, 8).map((row, index) => (
+                      <tr key={index}>
+                        {Object.values(row)
+                          .slice(0, 6)
+                          .map((value, columnIndex) => (
+                            <td key={columnIndex} className="p-3">
+                              {value}
+                            </td>
+                          ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
         </div>
       )}
     </div>

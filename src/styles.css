@@ -146,8 +146,13 @@
 }
 
 @layer base {
-  * { border-color: var(--color-border); }
-  html, body { height: 100%; }
+  * {
+    border-color: var(--color-border);
+  }
+  html,
+  body {
+    height: 100%;
+  }
   body {
     background-color: var(--color-background);
     color: var(--color-foreground);
@@ -163,6 +168,10 @@
     box-shadow: var(--shadow-kpi);
     border: 1px solid var(--color-border);
   }
-  .brand-gradient { background: var(--gradient-brand); }
-  .success-gradient { background: var(--gradient-success); }
+  .brand-gradient {
+    background: var(--gradient-brand);
+  }
+  .success-gradient {
+    background: var(--gradient-success);
+  }
 }

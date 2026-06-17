@@ -1,23 +1,29 @@
 import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
+import {
+  isGlobalRole,
+  isManagerialRole,
+  normalizeRole,
+  type PortalEmployee,
+  type PortalRole,
+} from "@/lib/portal";
+
+export type PortalProfile = {
+  auth_user_id: string;
+  employee_code: string;
+  role: PortalRole;
+};
 
 export type PortalUser = {
   userId: string;
-  employee: {
-    id: string;
-    employee_id: string;
-    name: string;
-    manager_id: string | null;
-    hq: string | null;
-    designation: string | null;
-    state: string | null;
-    status: string | null;
-    role: string | null;
-  };
-  isManager: boolean;
+  profile: PortalProfile;
+  employee: PortalEmployee;
+  role: PortalRole;
   isAdmin: boolean;
-  isManagement: boolean;
+  isHeadOffice: boolean;
+  isManagerial: boolean;
+  canManageUsers: boolean;
 };
 
 export function useAuthUserId() {
@@ -25,10 +31,10 @@ export function useAuthUserId() {
 
   useEffect(() => {
     let mounted = true;
-    supabase.auth.getUser().then(({ data }) => {
-      if (mounted) setUserId(data.user?.id ?? null);
+    supabase.auth.getSession().then(({ data }) => {
+      if (mounted) setUserId(data.session?.user.id ?? null);
     });
-    const { data: sub } = supabase.auth.onAuthStateChange((_e, session) => {
+    const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
       setUserId(session?.user?.id ?? null);
     });
     return () => {
@@ -48,25 +54,42 @@ export function usePortalUser() {
     queryKey: ["portal-user", userId],
     queryFn: async (): Promise<PortalUser | null> => {
       if (!userId) return null;
-      const { data: emp, error } = await supabase
-        .from("employees")
-        .select("id, employee_id, name, manager_id, hq, designation, state, status, role")
-        .eq("user_id", userId)
-        .maybeSingle();
-      if (error) throw error;
-      if (!emp) return null;
 
-      const role = emp.role || "be_mr";
-      const isManager = role === "manager" || role === "admin" || role === "management";
-      const isAdmin = role === "admin";
-      const isManagement = role === "management";
+      const { data: profile, error: profileError } = await supabase
+        .from("user_profiles")
+        .select("auth_user_id, employee_code, role")
+        .eq("auth_user_id", userId)
+        .maybeSingle();
+
+      if (profileError) throw profileError;
+      if (!profile) return null;
+
+      const { data: employee, error: employeeError } = await supabase
+        .from("employees")
+        .select(
+          "employee_code, employee_name, designation, role, manager_code, hq, state, active, auth_user_id",
+        )
+        .eq("employee_code", profile.employee_code)
+        .maybeSingle();
+
+      if (employeeError) throw employeeError;
+      if (!employee) return null;
+
+      const role = normalizeRole(profile.role ?? employee.role);
 
       return {
         userId,
-        employee: emp,
-        isManager,
-        isAdmin,
-        isManagement,
+        profile: {
+          auth_user_id: profile.auth_user_id,
+          employee_code: profile.employee_code,
+          role,
+        },
+        employee,
+        role,
+        isAdmin: role === "admin",
+        isHeadOffice: role === "head_office",
+        isManagerial: isManagerialRole(role),
+        canManageUsers: isGlobalRole(role),
       };
     },
   });

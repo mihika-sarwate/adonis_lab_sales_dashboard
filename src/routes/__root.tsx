@@ -79,15 +79,35 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
       { name: "viewport", content: "width=device-width, initial-scale=1, viewport-fit=cover" },
       { name: "theme-color", content: "#0e6fa3" },
       { title: "Sales Performance Portal" },
-      { name: "description", content: "Pharmaceutical sales performance portal with KPIs, team rankings, and an AI assistant." },
+      {
+        name: "description",
+        content:
+          "Pharmaceutical sales performance portal with KPIs, team rankings, and a database-driven sales assistant.",
+      },
       { property: "og:title", content: "Sales Performance Portal" },
-      { property: "og:description", content: "Pharmaceutical sales performance portal with KPIs, team rankings, and an AI assistant." },
+      {
+        property: "og:description",
+        content:
+          "Pharmaceutical sales performance portal with KPIs, team rankings, and a database-driven sales assistant.",
+      },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary" },
       { name: "twitter:title", content: "Sales Performance Portal" },
-      { name: "twitter:description", content: "Pharmaceutical sales performance portal with KPIs, team rankings, and an AI assistant." },
-      { property: "og:image", content: "https://pub-bb2e103a32db4e198524a2e9ed8f35b4.r2.dev/81afc55f-dc42-4739-a0cc-504c30798e9f/id-preview-962618fa--1d26b5ea-1ef7-4aea-8f4e-c73da8b1c66f.lovable.app-1781610433866.png" },
-      { name: "twitter:image", content: "https://pub-bb2e103a32db4e198524a2e9ed8f35b4.r2.dev/81afc55f-dc42-4739-a0cc-504c30798e9f/id-preview-962618fa--1d26b5ea-1ef7-4aea-8f4e-c73da8b1c66f.lovable.app-1781610433866.png" },
+      {
+        name: "twitter:description",
+        content:
+          "Pharmaceutical sales performance portal with KPIs, team rankings, and a database-driven sales assistant.",
+      },
+      {
+        property: "og:image",
+        content:
+          "https://pub-bb2e103a32db4e198524a2e9ed8f35b4.r2.dev/81afc55f-dc42-4739-a0cc-504c30798e9f/id-preview-962618fa--1d26b5ea-1ef7-4aea-8f4e-c73da8b1c66f.lovable.app-1781610433866.png",
+      },
+      {
+        name: "twitter:image",
+        content:
+          "https://pub-bb2e103a32db4e198524a2e9ed8f35b4.r2.dev/81afc55f-dc42-4739-a0cc-504c30798e9f/id-preview-962618fa--1d26b5ea-1ef7-4aea-8f4e-c73da8b1c66f.lovable.app-1781610433866.png",
+      },
     ],
     links: [
       {

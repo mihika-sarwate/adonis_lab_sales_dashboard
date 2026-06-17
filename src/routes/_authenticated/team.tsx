@@ -1,97 +1,110 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useQuery } from "@tanstack/react-query";
-import { supabase } from "@/integrations/supabase/client";
-import { usePortalUser } from "@/hooks/usePortalUser";
-import { KpiCard, formatINR, formatPct } from "@/components/portal/KpiCard";
+import { useMemo } from "react";
 import { Users, Trophy, TrendingDown } from "lucide-react";
+import { usePortalUser } from "@/hooks/usePortalUser";
+import { usePortalPerformanceData } from "@/hooks/usePortalPerformance";
+import { KpiCard, formatINR, formatPct } from "@/components/portal/KpiCard";
+import {
+  aggregateByField,
+  buildPerformanceRows,
+  buildRankings,
+  teamSummary,
+} from "@/lib/analytics";
+import { isManagerialRole, normalizeRole } from "@/lib/portal";
 
 export const Route = createFileRoute("/_authenticated/team")({
-  head: () => ({ meta: [{ title: "Team · Sales Performance" }] }),
+  head: () => ({ meta: [{ title: "Team · Pharmaceutical Sales Portal" }] }),
   component: TeamPage,
 });
 
-type Row = {
-  empId: string;
-  name: string;
-  code: string;
-  ytdSales: number;
-  ytdTarget: number;
-  ach: number;
-};
-
 function TeamPage() {
-  const { data: me } = usePortalUser();
-  const year = new Date().getFullYear();
-  const myId = me?.employee.id;
+  const { data: me, isLoading: meLoading } = usePortalUser();
+  const { data, isLoading } = usePortalPerformanceData();
 
-  const { data, isLoading } = useQuery({
-    enabled: !!myId && !!me?.isManager,
-    queryKey: ["team", myId, year],
-    queryFn: async () => {
-      const { data: teamData } = await supabase
-        .from("employees")
-        .select("id, employee_id, name")
-        .eq("manager_id", myId!);
-      const team = teamData ?? [];
-      const ids = team.map((t) => t.id);
-      if (!ids.length) return { rows: [] as Row[] };
-      const [{ data: tg = [] }, { data: ts = [] }] = await Promise.all([
-        supabase.from("monthly_targets").select("employee_id, target_amount").in("employee_id", ids).eq("year", year),
-        supabase.from("monthly_sales").select("employee_id, sales_amount").in("employee_id", ids).eq("year", year),
-      ]);
-      const num = (v: unknown) => (typeof v === "string" ? parseFloat(v) : (v as number)) || 0;
-      const rows: Row[] = team.map((e) => {
-        const ytdSales = (ts as Array<{ employee_id: string; sales_amount: number }>)
-          .filter((s) => s.employee_id === e.id)
-          .reduce((a, b) => a + num(b.sales_amount), 0);
-        const ytdTarget = (tg as Array<{ employee_id: string; target_amount: number }>)
-          .filter((t) => t.employee_id === e.id)
-          .reduce((a, b) => a + num(b.target_amount), 0);
-        const ach = ytdTarget > 0 ? (ytdSales / ytdTarget) * 100 : 0;
-        return { empId: e.id, code: e.employee_id, name: e.name, ytdSales, ytdTarget, ach };
-      });
-      rows.sort((a, b) => b.ach - a.ach);
-      return { rows };
-    },
-  });
+  const rows = useMemo(() => {
+    if (!data) return [];
+    return buildPerformanceRows(data.employees, data.sales, data.targets);
+  }, [data]);
 
-  if (me && !me.isManager) {
+  const role = normalizeRole(me?.role ?? me?.employee.role);
+  const scopedRows = useMemo(() => {
+    if (!me) return [];
+    if (!isManagerialRole(role)) return [];
+    return rows;
+  }, [me, rows, role]);
+
+  if (meLoading || isLoading) return <div className="kpi-card p-6 animate-pulse h-40" />;
+
+  if (!me || !isManagerialRole(role)) {
     return (
       <div className="kpi-card p-6 text-center text-sm text-muted-foreground">
-        Only managers can view the team dashboard.
+        Only managers, regional leaders, head office, and admins can view the team dashboard.
       </div>
     );
   }
 
-  if (isLoading || !data) return <div className="kpi-card p-6 animate-pulse h-40" />;
-
-  const rows = data.rows;
-  const teamSales = rows.reduce((a, r) => a + r.ytdSales, 0);
-  const teamTarget = rows.reduce((a, r) => a + r.ytdTarget, 0);
-  const teamAch = teamTarget > 0 ? (teamSales / teamTarget) * 100 : 0;
-  const top10 = rows.slice(0, 10);
-  const bottom10 = [...rows].reverse().slice(0, 10);
+  const summary = teamSummary(scopedRows);
+  const rankings = buildRankings(scopedRows);
+  const stateRankings = aggregateByField(scopedRows, "state");
 
   return (
     <div className="space-y-5">
       <section>
         <h1 className="text-xl font-semibold tracking-tight">Team Performance</h1>
-        <p className="text-sm text-muted-foreground">YTD · {rows.length} team members</p>
+        <p className="text-sm text-muted-foreground">
+          {me.employee.employee_name} · {scopedRows.length} visible team members
+        </p>
       </section>
 
       <section className="grid grid-cols-2 gap-3">
-        <KpiCard label="Team Sales (YTD)" value={formatINR(teamSales)} icon={<Users className="size-4" />} />
+        <KpiCard
+          label="Team Sales"
+          value={formatINR(summary.sales)}
+          icon={<Users className="size-4" />}
+        />
         <KpiCard
           label="Team Achievement"
-          value={formatPct(teamAch)}
+          value={formatPct(summary.achievement_pct)}
           icon={<Trophy className="size-4" />}
-          accent={teamAch >= 100 ? "success" : teamAch >= 80 ? "primary" : "destructive"}
-          hint={`Target ${formatINR(teamTarget)}`}
+          accent={
+            summary.achievement_pct >= 100
+              ? "success"
+              : summary.achievement_pct >= 80
+                ? "primary"
+                : "destructive"
+          }
+          hint={`Target ${formatINR(summary.target)}`}
         />
       </section>
 
-      <RankingList title="Top Performers" rows={top10} accent="success" />
-      <RankingList title="Bottom Performers" rows={bottom10} accent="destructive" icon={<TrendingDown className="size-4" />} />
+      <section className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <RankingList title="Top Performers" rows={rankings.top5} accent="success" />
+        <RankingList
+          title="Bottom Performers"
+          rows={rankings.bottom5}
+          accent="destructive"
+          icon={<TrendingDown className="size-4" />}
+        />
+      </section>
+
+      <section className="kpi-card p-4 space-y-3">
+        <h2 className="text-xs font-bold uppercase tracking-wider text-muted-foreground">
+          State Snapshot
+        </h2>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          {stateRankings.slice(0, 6).map((state) => (
+            <div key={state.label} className="rounded-xl border p-3">
+              <div className="flex items-center justify-between gap-2">
+                <p className="font-medium">{state.label}</p>
+                <span className="text-sm font-semibold">{formatPct(state.achievement_pct)}</span>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                {formatINR(state.sales)} sales against {formatINR(state.target)} target
+              </p>
+            </div>
+          ))}
+        </div>
+      </section>
     </div>
   );
 }
@@ -103,7 +116,7 @@ function RankingList({
   icon,
 }: {
   title: string;
-  rows: Row[];
+  rows: ReturnType<typeof buildRankings>["top5"];
   accent: "success" | "destructive";
   icon?: React.ReactNode;
 }) {
@@ -115,24 +128,25 @@ function RankingList({
       </section>
     );
   }
+
   return (
     <section className="kpi-card divide-y">
       <div className="p-4 flex items-center justify-between">
         <h2 className="text-sm font-semibold">{title}</h2>
         {icon ?? <Trophy className="size-4 text-muted-foreground" />}
       </div>
-      {rows.map((r, i) => (
-        <div key={r.empId} className="px-4 py-3 flex items-center gap-3">
+      {rows.map((row, index) => (
+        <div key={row.employee_code} className="px-4 py-3 flex items-center gap-3">
           <span className="size-7 rounded-full bg-muted grid place-items-center text-xs font-semibold text-muted-foreground">
-            {i + 1}
+            {index + 1}
           </span>
           <div className="flex-1 min-w-0">
-            <p className="text-sm font-medium truncate">{r.name}</p>
-            <p className="text-[11px] text-muted-foreground">{r.code}</p>
+            <p className="text-sm font-medium truncate">{row.employee_name}</p>
+            <p className="text-[11px] text-muted-foreground">{row.employee_code}</p>
           </div>
           <div className="text-right">
-            <p className="text-sm font-semibold">{formatPct(r.ach)}</p>
-            <p className="text-[11px] text-muted-foreground">{formatINR(r.ytdSales)}</p>
+            <p className="text-sm font-semibold">{formatPct(row.ytd_achievement_pct)}</p>
+            <p className="text-[11px] text-muted-foreground">{formatINR(row.ytd_sales)}</p>
           </div>
           <span
             className={[
@@ -141,8 +155,11 @@ function RankingList({
             ].join(" ")}
           >
             <span
-              className={["block h-full", accent === "success" ? "bg-success" : "bg-destructive"].join(" ")}
-              style={{ width: `${Math.min(100, Math.max(2, r.ach))}%` }}
+              className={[
+                "block h-full",
+                accent === "success" ? "bg-success" : "bg-destructive",
+              ].join(" ")}
+              style={{ width: `${Math.min(100, Math.max(2, row.ytd_achievement_pct))}%` }}
             />
           </span>
         </div>

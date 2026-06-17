@@ -1,13 +1,13 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useState, useRef, useEffect } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useServerFn } from "@tanstack/react-start";
+import { Loader2, Send, Sparkles } from "lucide-react";
 import { askAssistant } from "@/lib/assistant.functions";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Sparkles, Send, Loader2 } from "lucide-react";
 
 export const Route = createFileRoute("/_authenticated/assistant")({
-  head: () => ({ meta: [{ title: "Assistant · Sales Performance" }] }),
+  head: () => ({ meta: [{ title: "Assistant · Pharmaceutical Sales Portal" }] }),
   component: AssistantPage,
 });
 
@@ -15,9 +15,11 @@ type Msg = { role: "user" | "assistant"; content: string };
 
 const SUGGESTIONS = [
   "What is my achievement?",
-  "How much more sales do I need?",
-  "Who is below 80% achievement?",
+  "How much sales do I need to reach target?",
+  "Show employees below 80% achievement.",
   "Show team ranking.",
+  "Which state is performing best?",
+  "What is company achievement?",
 ];
 
 function AssistantPage() {
@@ -31,18 +33,18 @@ function AssistantPage() {
     endRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, busy]);
 
-  async function send(q: string) {
-    const question = q.trim();
+  async function send(questionText: string) {
+    const question = questionText.trim();
     if (!question || busy) return;
-    setMessages((m) => [...m, { role: "user", content: question }]);
+    setMessages((current) => [...current, { role: "user", content: question }]);
     setInput("");
     setBusy(true);
     try {
-      const res = await ask({ data: { question } });
-      setMessages((m) => [...m, { role: "assistant", content: res.answer }]);
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : "Failed.";
-      setMessages((m) => [...m, { role: "assistant", content: `⚠️ ${msg}` }]);
+      const response = await ask({ data: { question } });
+      setMessages((current) => [...current, { role: "assistant", content: response.answer }]);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to load an answer.";
+      setMessages((current) => [...current, { role: "assistant", content: `Warning: ${message}` }]);
     } finally {
       setBusy(false);
     }
@@ -56,7 +58,9 @@ function AssistantPage() {
         </div>
         <div>
           <h1 className="text-lg font-semibold leading-tight">Performance Assistant</h1>
-          <p className="text-xs text-muted-foreground">Ask about your sales, targets, and team.</p>
+          <p className="text-xs text-muted-foreground">
+            Ask about your sales, targets, hierarchy, or rankings.
+          </p>
         </div>
       </div>
 
@@ -65,51 +69,58 @@ function AssistantPage() {
           <div className="space-y-3">
             <p className="text-sm text-muted-foreground">Try one of these:</p>
             <div className="flex flex-wrap gap-2">
-              {SUGGESTIONS.map((s) => (
+              {SUGGESTIONS.map((suggestion) => (
                 <button
-                  key={s}
-                  onClick={() => send(s)}
+                  key={suggestion}
+                  onClick={() => send(suggestion)}
                   className="text-xs px-3 py-1.5 rounded-full border bg-secondary hover:bg-accent transition"
                 >
-                  {s}
+                  {suggestion}
                 </button>
               ))}
             </div>
           </div>
         )}
-        {messages.map((m, i) => (
-          <div key={i} className={m.role === "user" ? "flex justify-end" : "flex justify-start"}>
+
+        {messages.map((message, index) => (
+          <div
+            key={index}
+            className={message.role === "user" ? "flex justify-end" : "flex justify-start"}
+          >
             <div
               className={[
                 "max-w-[85%] rounded-2xl px-3.5 py-2 text-sm whitespace-pre-wrap",
-                m.role === "user" ? "bg-primary text-primary-foreground" : "bg-secondary",
+                message.role === "user" ? "bg-primary text-primary-foreground" : "bg-secondary",
               ].join(" ")}
             >
-              {m.content}
+              {message.content}
             </div>
           </div>
         ))}
+
         {busy && (
           <div className="flex justify-start">
             <div className="bg-secondary rounded-2xl px-3.5 py-2 text-sm flex items-center gap-2">
-              <Loader2 className="size-4 animate-spin" /> Thinking…
+              <Loader2 className="size-4 animate-spin" />
+              Thinking...
             </div>
           </div>
         )}
+
         <div ref={endRef} />
       </div>
 
       <form
         className="mt-3 flex gap-2"
-        onSubmit={(e) => {
-          e.preventDefault();
+        onSubmit={(event) => {
+          event.preventDefault();
           send(input);
         }}
       >
         <Input
-          placeholder="Ask anything about your performance…"
+          placeholder="Ask anything about performance..."
           value={input}
-          onChange={(e) => setInput(e.target.value)}
+          onChange={(event) => setInput(event.target.value)}
         />
         <Button type="submit" disabled={busy || !input.trim()}>
           <Send className="size-4" />

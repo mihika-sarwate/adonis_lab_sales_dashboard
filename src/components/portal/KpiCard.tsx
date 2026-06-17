@@ -39,13 +39,9 @@ export function KpiCard({
   return (
     <div className="kpi-card p-4 flex flex-col gap-2 min-w-0">
       <div className="flex items-center justify-between gap-2">
-        <p className="text-xs uppercase tracking-wide text-muted-foreground font-medium">
-          {label}
-        </p>
+        <p className="text-xs uppercase tracking-wide text-muted-foreground font-medium">{label}</p>
         {icon && (
-          <span className={`size-8 rounded-lg grid place-items-center ${accentClass}`}>
-            {icon}
-          </span>
+          <span className={`size-8 rounded-lg grid place-items-center ${accentClass}`}>{icon}</span>
         )}
       </div>
       <p className="text-2xl font-semibold tracking-tight">{value}</p>
